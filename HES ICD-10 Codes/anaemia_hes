@@ -3,7 +3,7 @@ D50, Iron deficiency anemia,1
 D50.0,Iron deficiency anemia secondary to blood loss (chronic),1
 D50.1,Sideropenic dysphagia,1
 D50.8,Other iron deficiency anemias,1
-D50.9,"Iron deficiency anemia, unspecified",1
+D50.9,Iron deficiency anemia, unspecified,1
 D51.0,Vitamin B12 deficiency anemia due to intrinsic factor deficiency,1
 D51.1,Vitamin B12 deficiency anemia due to selective vitamin B12 malabsorption with proteinuria,1
 D51.2,Transcobalamin II deficiency,1
@@ -55,10 +55,10 @@ D64.2,Secondary sideroblastic anemia due to drugs and toxins,1
 D64.3,Other sideroblastic anemias,1
 D64.4,Congenital dyserythropoietic anemia,1
 D64.8,Other specified anemias,1
- D60.0,Chronic acquired pure red cell aplasia,1
- D60.1,Transient acquired pure red cell aplasia,1
- D60.8,Other acquired pure red cell aplasias,1
- D60.9,"Acquired pure red cell aplasia, unspecified",1
+D60.0,Chronic acquired pure red cell aplasia,1
+D60.1,Transient acquired pure red cell aplasia,1
+D60.8,Other acquired pure red cell aplasias,1
+D60.9,"Acquired pure red cell aplasia, unspecified",1
 D61,Other aplastic anemias and other bone marrow failure syndromes,1
 D61.0,Constitutional aplastic anemia,1
 D61.1,Drug-induced aplastic anemia,1
