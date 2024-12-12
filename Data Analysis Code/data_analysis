@@ -1,1 +1,2794 @@
+////////////////////////////////////////////////////////////////////////////////
+*Prepare CPRD GOLD and Aurum dataset 
+////////////////////////////////////////////////////////////////////////////////
+*load dataset
+use "...\gold_cohort1.dta", clear 
+append using "...\aurum_cohort1.dta", force
 
+*clean data: 
+*Obesity (using test file)
+replace Obesity=0 if Obesity==. 
+count if missing(Obesity)
+
+*clean data: 
+*CKD (using test file)
+*ckd = medcodeid (clinical file)
+replace CKD=0 if CKD==.
+count if missing(CKD)
+
+*inclusion criterion check: drop if <18 age 
+gen index = date(indexdate, "DMY")
+format index %td
+gen indexyear = yofd(index)
+destring yob, replace 
+gen age = indexyear - yob 
+drop if age<18 
+
+*inclusion criterion check: keep if gender is female or male only 
+keep if gender=="female" | gender=="male" 
+tab gender 
+
+*count population 
+tab t2d
+
+*prepare data: convert days to years
+replace tt_dod=tt_dod/365
+replace tt_end=tt_end/365 
+replace tt_linkdate=tt_linkdate/365
+replace tt_lcd=tt_lcd/365
+replace tt_tod=tt_tod/365 
+foreach ot in hf ihdb {
+replace tt_`ot'_dod=tt_`ot'_dod/365 
+replace tt_`ot'_outh=tt_`ot'_outh/365
+replace tt_`ot'_outc=tt_`ot'_outc/365
+}
+
+////////////////////////////////////////////////////////////////////////////////
+*Define censoring/ survival time 
+////////////////////////////////////////////////////////////////////////////////
+
+******Death survival time (ONS OR HES OR CPRD) 
+egen tte_dod_out = rowmin(tt_dod tt_end tt_linkdate tt_tod tt_lcd) 
+*Create dod_out binary variable (censored)
+gen dod_out=1 if tte_dod_out==tt_dod
+replace dod_out=0 if missing(dod_out)
+
+******HF & other CVD survival time (ONS OR HES OR CPRD)
+*1.HES HF or death by HF (new definition of incident HF = HF in HES or death or CPRD) 
+foreach ot in hf ihdb {
+egen tt_`ot'_out = rowmin(tt_`ot'_outh tt_`ot'_dod tt_`ot'_outc) 
+gen `ot'_out=0 if missing(tt_`ot'_out)
+replace `ot'_out=1 if missing(hf_out) 
+}
+
+*2.generate row minimum variable (HES, date of death, linkdate, lcd, tod, end) 
+foreach ot in hf ihdb {
+egen tte_`ot'_out = rowmin(tt_`ot'_out tt_dod tt_end tt_linkdate tt_tod tt_lcd)
+}
+
+*3.censor data: relabel variable = 0 if time to event is NOT time to HF 
+foreach ot in hf ihdb {
+replace `ot'_out=0 if tte_`ot'_out!=tt_`ot'_out
+replace `ot'_out=1 if tte_`ot'_out==tt_`ot'_out
+}
+
+*******Ischaemic vs. Non-ischaemic HF survival time (ONS OR HES OR CPRD)********
+
+*4. define ischaemic-HF time to event variable 
+*if hf_out =1 & ihdb_out =1 
+gen tte_hfi_out= tte_hf_out if (tte_hf_out==tte_ihdb_out & hf_out==1 & ihdb_out==1) | (tte_ihdb_out < tte_hf_out & hf_out==1 & ihdb_out==1) 
+*replace remaining with censoring lod, lcd, tod, linkdate, dod
+egen hf_cens = rowmin(tt_dod tt_end tt_linkdate tt_tod tt_lcd)  
+replace tte_hfi_out = hf_cens if missing(tte_hfi_out)
+*indicator variable 
+gen hfi_out =1 if (tte_hf_out==tte_ihdb_out & hf_out==1 & ihdb_out==1) | (tte_ihdb_out < tte_hf_out & hf_out==1 & ihdb_out==1) 
+replace hfi_out=0 if missing(hfi_out)
+
+*5. .define non-ischaemic HF time to event variable 
+*defined by developing HF (without prior ischaemic heart disease)
+*HF and developing ihd after 
+gen tte_hfn_out= tte_hf_out if (tte_hf_out==tte_ihdb_out & hf_out==1 & ihdb_out==0) | (tte_ihdb_out < tte_hf_out & hf_out==1 & ihdb_out==0) | (tte_hf_out < tte_ihdb_out & hf_out==1 & ihdb_out==1) | (tte_hf_out < tte_ihdb_out & hf_out==1 & ihdb_out==0)
+*replace with censored data if ischaemic-HF 
+replace tte_hfn_out = hf_cens if missing(tte_hfn_out) 
+*indicator variable 
+gen hfn_out =1 if (tte_hf_out==tte_ihdb_out & hf_out==1 & ihdb_out==0) | (tte_ihdb_out < tte_hf_out & hf_out==1 & ihdb_out==0) | (tte_hf_out < tte_ihdb_out & hf_out==1 & ihdb_out==1) | (tte_hf_out < tte_ihdb_out & hf_out==1 & ihdb_out==0)
+replace hfn_out=0 if missing(hfn_out)
+
+*check 
+tab hf_out 
+tab hfi_out 
+tab hfn_out 
+
+*6. Create indicator variable 
+gen hf_type="ischaemic HF" if hfi_out==1 
+replace hf_type="non-ischaemic HF" if hfn_out==1 
+
+********Exclude if negative(-) time to event i.e. if last linkage date in HES, linkage date in ONS OR date of death is PRIOR to index date  
+
+//exclude dod prior or same as index 
+drop if date(indexdate, "DMY")>date(dod, "DMY") | date(indexdate, "DMY")==date(dod, "DMY") 
+
+//exclude linkdate prior or same as index 
+drop if date(indexdate, "DMY")>date(linkdate, "DMY") | date(indexdate, "DMY")==date(linkdate, "DMY")
+
+//exclude lcd prior or same as index 
+drop if date(indexdate, "DMY")>date(lcd, "DMY") | date(indexdate, "DMY")==date(lcd, "DMY") 
+
+//exclude tod prior or same as index 
+drop if date(indexdate, "DMY")>date(tod, "DMY") | date(indexdate, "DMY")==date(tod, "DMY") 
+
+//exclude enddate prior or same as inde2
+drop if date(indexdate, "DMY")>date("29/03/2021", "DMY") | date(indexdate, "DMY")==date("29/03/2021", "DMY") 
+
+****************************Define T2D cohort***********************************
+*count total participants 
+tab t2d cprd 
+tab t1d cprd 
+
+**1.sensitivity: If a patient has code for t2d and t1d, then replace t1d=0 and t2d=1 
+replace t2d=1 if t2d==1 & t1d==1
+
+*2.keep t2d cohort only i.e. drop if t2d == missing 
+drop if t2d==. 
+*count total population 
+tab t2d cprd 
+
+////////////////////////////////////////////////////////////////////////////////
+*************************Supplement: Flowchart start****************************
+////////////////////////////////////////////////////////////////////////////////
+
+*3.exclude prevalent baseline HF 
+drop if hf_BL==1
+*CPRD Gold and Aurum 
+tab t2d cprd 
+
+*10-year survival time only: drop if indexyear is 2009 
+drop if indexyear>2009 
+*check 
+tab t2d cprd 
+*CPRD Gold and Aurum 
+tab indexyear 
+
+*4.exclude CVD (excluding HTN and AF) 
+*ihdb_BL = ischaemic heart disease [with coronary heart disease, myocardial infarction and angina]
+egen excl_CVD= rowtotal (ihdb_BL pvd_BL stroke_BL) 
+tab excl_CVD 
+*CPRD Gold 
+count if excl_CVD==0 & cprd=="gold" 
+*CPRD Aurum 
+count if excl_CVD==0 & cprd=="aurum" 
+*keep if prevalent CVD=0 
+keep if excl_CVD==0 
+*count t2d by cprd gold vs. aurum 
+tab t2d cprd 
+
+*5.count total population (excluding CVD, but NOT HF and AF) 
+tab t2d 
+
+*6.drop participants if glucose-lowering drugs in people without diabetes = coding error?
+tab oral_glucose t2d
+tab insulin t2d 
+*count data (supplement)
+count if (oral_glucose==1 & t2d==0) | (insulin==1 & t2d==0) & (cprd=="gold")
+count if (oral_glucose==1 & t2d==0) | (insulin==1 & t2d==0) & (cprd=="aurum")
+*drop glucose-lowering drugs in people without diabetes - GOLDim
+drop if (oral_glucose==1 & t2d==0) | (insulin==1 & t2d==0) & (cprd=="gold")
+*drop glucose-lowering drugs in people without diabetes - Aurum 
+drop if (oral_glucose==1 & t2d==0) | (insulin==1 & t2d==0) & (cprd=="aurum")
+*check 
+tab oral_glucose t2d 
+tab insulin t2d 
+*count total population (excluding glucose-lowering drugs in people without diabetes only)
+tab t2d cprd 
+
+//Missing data(%) 
+*CPRD GOLD: counts and (%) missing at baseline 
+*total population: 296,785
+foreach ot in age ethnic imd systolic smokstatus BMI alcstatus eGFR {
+*CPRD GOLD 
+describe `ot'
+count if missing(`ot') & cprd=="gold"
+gen `ot'_=1 if missing(`ot') & cprd=="gold"
+egen `ot'_miss=sum(`ot'_) 
+display (`ot'_miss/296785)*100
+drop `ot'_ `ot'_miss 
+}
+
+*CPRD Aurum: counts and (%) missing at baseline 
+*total population: 919,176
+foreach ot in age ethnic imd systolic smokstatus BMI alcstatus eGFR {
+*CPRD Aurum 
+describe `ot'
+count if missing(`ot') & cprd=="aurum"
+gen `ot'_=1 if missing(`ot') & cprd=="aurum"
+egen `ot'_miss=sum(`ot'_) 
+display (`ot'_miss/919176)*100
+drop `ot'_ `ot'_miss 
+}
+
+*.complete case analysis 
+tab t2d cprd 
+*CPRD Gold 
+drop if missing(age) & cprd=="gold" 
+drop if missing(gender) & cprd=="gold" 
+drop if missing(BMI) & cprd=="gold" 
+drop if missing(systolic) & cprd=="gold"
+drop if missing(ethnic) & cprd=="gold"
+drop if missing(imd) & cprd=="gold"
+drop if missing(smokstatus) & cprd=="gold"
+tab t2d cprd 
+
+*CPRD Aurum 
+drop if missing(age) & cprd=="aurum" 
+drop if missing(gender) & cprd=="aurum" 
+drop if missing(BMI) & cprd=="aurum" 
+drop if missing(systolic) & cprd=="aurum" 
+drop if missing(ethnic) & cprd=="aurum" 
+drop if missing(imd) & cprd=="aurum" 
+drop if missing(smokstatus) & cprd=="aurum" 
+tab t2d cprd 
+
+*final cohort 
+tab t2d gender
+
+******************************Flowchart End*************************************
+
+////////////////////////////////////////////////////////////////////////////////
+*Supplement: missing table (%) baseline characteristics 
+////////////////////////////////////////////////////////////////////////////////
+
+*total population =  735,810 
+foreach ot in chol alcstatus {
+describe `ot'
+count if missing(`ot') 
+gen `ot'_=1 if missing(`ot') 
+egen `ot'_miss=sum(`ot'_) 
+display (`ot'_miss/735810)*100
+drop `ot'_ `ot'_miss 
+}
+
+*people with t2d = 214,975
+foreach ot in chol alcstatus {
+describe `ot'
+count if missing(`ot') & t2d==1
+gen `ot'_=1 if missing(`ot') & t2d==1 
+egen `ot'_miss=sum(`ot'_) 
+display (`ot'_miss/214975)*100
+drop `ot'_ `ot'_miss 
+}
+
+*people without diabetes = 520,835
+foreach ot in chol alcstatus {
+describe `ot'
+count if missing(`ot') & t2d==0 
+gen `ot'_=1 if missing(`ot') & t2d==0 
+egen `ot'_miss=sum(`ot'_) 
+display (`ot'_miss/520835)*100
+drop `ot'_ `ot'_miss 
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+*check dod 0,1 
+replace dod_out=0 if missing(dod_out)
+
+*rates per 1,000 person-years 
+gen pop_hf=tte_hf_out/1000
+gen pop_hfi=tte_hfi_out/1000
+gen pop_hfn=tte_hfn_out/1000
+gen pop_dod=tte_dod_out/1000
+
+*gen indexyear_cut (compare two time periods 2000-2004 vs. 2005-2009)
+gen indexyear_cut="2000-2004" if indexyear==2000 | indexyear==2001 | indexyear==2002 | indexyear==2003 | indexyear==2004 
+replace indexyear_cut="2005-2009" if indexyear==2005 | indexyear==2006 | indexyear==2007 | indexyear==2008 | indexyear==2009 
+tab indexyear_cut 
+sencode indexyear_cut, replace 
+
+*generate sex - male = 2; female = 1
+gen sex = 2 if gender == "male"
+replace sex = 1 if gender == "female"
+tab gender 
+tab sex 
+destring sex, replace 
+
+*age groups for age-stratified  
+gen age_cut="<60" if age<60
+replace age_cut="60-69" if age>59 & age<70 
+replace age_cut="70-79" if age>69 & age<80
+replace age_cut="80≥" if age>79
+tab age_cut 
+sencode age_cut, replace
+
+*IMD variable 
+*imd 1 = most affluent/least deprived 
+*imd 5 = most deprived 
+tab imd 
+gen imd_cut = 1 if imd=="1" 
+replace imd_cut= 5 if imd=="5" 
+tab imd_cut 
+
+*save total cohort 
+save "...\overall_t2d_trends", replace 
+
+////////////////////////////////////////////////////////////////////////////////
+*Baseline characteristics - Women 
+////////////////////////////////////////////////////////////////////////////////
+*load data 
+use "...\overall_t2d_trends", clear 
+
+*female cohort 
+keep if gender=="female" 
+
+*continous variables (mean, standard deviation)
+foreach cv in age BMI systolic chol {
+destring `cv', replace 
+tab t2d, summarize(`cv')
+sum `cv', d
+}
+
+*categorical variables 
+foreach b in ethnic imd smokstatus_cut alcstatus anaemia asthma af_BL cancer CKD cld copd dementia depression htn_BL oa ra thy oral_hyper antiplat digoxin oral_lipid {
+destring `b', replace 
+tab `b' t2d, column 
+}
+
+////////////////////////////////////////////////////////////////////////////////
+*Baseline characteristics - Men 
+////////////////////////////////////////////////////////////////////////////////
+*load data 
+use "...\overall_t2d_trends", clear 
+
+*male cohort 
+keep if gender=="male" 
+
+*continous variables (mean, standard deviation)
+foreach cv in age BMI systolic chol {
+destring `cv', replace 
+tab t2d, summarize(`cv')
+sum `cv', d
+}
+
+*categorical variables 
+foreach b in ethnic imd smokstatus_cut alcstatus anaemia asthma af_BL cancer CKD cld copd dementia depression htn_BL oa ra thy oral_hyper antiplat digoxin oral_lipid {
+destring `b', replace 
+tab `b' t2d, column 
+}
+
+////////////////////////////////////////////////////////////////////////////////
+*Prepare categorical dataset for analysis 
+////////////////////////////////////////////////////////////////////////////////
+*load data 
+use "...\overall_t2d_trends", clear 
+
+*format data 
+sencode ethnic, replace 
+sencode alcstatus, replace 
+sencode smokstatus_cut, replace 
+destring imd, replace 
+
+*save cohort 
+save "...\overall_t2d_trends", replace 
+
+////////////////////////////////////////////////////////////////////////////////
+*Number of heart failure events  (in-text)
+////////////////////////////////////////////////////////////////////////////////
+//-----ischaemic heart failure 
+*load data
+use "...\overall_t2d_trends", clear 
+
+*stset model 
+stset tte_hfi_out, id(patid) exit(time 10) failure(hfi_out==1)
+gen out = _d
+
+*total ischaemic HF events 
+tabulate out 
+
+*ischaemic HF events in people with t2d 
+tabulate out gender if t2d==1 
+
+*ischaemic HF events in people without diabetes 
+tabulate out gender if t2d==0 
+
+//-----non-ischaemic heart failure 
+*load data
+use "...\overall_t2d_trends", clear 
+
+*stset model 
+stset tte_hfn_out, id(patid) exit(time 10) failure(hfn_out==1)
+gen out = _d
+
+*total non-ischaemic HF events 
+tabulate out 
+
+*non-ischaemic HF events in people with t2d 
+tabulate out gender if t2d==1 
+
+*non-ischaemic HF events in people without diabetes 
+tabulate out gender if t2d==0 
+
+////////////////////////////////////////////////////////////////////////////////
+*Follow-up time (median, IQR)
+////////////////////////////////////////////////////////////////////////////////
+*Total population - HF 
+use "...\overall_t2d_trends", clear
+stset tte_hf_out, id(patid) exit(time 10) failure(hf_out==1)
+gen followup_time = _t 
+sum followup_time, detail
+total followup_time
+
+*Men with HF 
+use "...\overall_t2d_trends", clear
+keep if gender=="male" 
+stset tte_hf_out, id(patid) exit(time 10) failure(hf_out==1)
+gen followup_time = _t 
+sum followup_time, detail 
+total followup_time
+
+*Women with HF 
+use "...\overall_t2d_trends", clear
+keep if gender=="female"
+stset tte_hf_out, id(patid) exit(time 10) failure(hf_out==1)
+gen followup_time = _t 
+sum followup_time, detail
+total followup_time
+
+*Total population - ischaemic HF 
+use "...\overall_t2d_trends", clear
+stset tte_hfi_out, id(patid) exit(time 10) failure(hfi_out==1)
+gen followup_time = _t 
+sum followup_time, detail 
+total followup_time
+
+*Men with ischaemic HF 
+use "...\overall_t2d_trends", clear
+keep if gender=="male"
+stset tte_hfi_out, id(patid) exit(time 10) failure(hfi_out==1)
+gen followup_time = _t 
+sum followup_time, detail 
+total followup_time
+
+*Women with ischaemic HF 
+use "...\overall_t2d_trends", clear
+keep if gender=="female"
+stset tte_hfi_out, id(patid) exit(time 10) failure(hfi_out==1)
+gen followup_time = _t 
+sum followup_time, detail 
+total followup_time
+
+*Total population - non-ischaemic HF 
+use "...\overall_t2d_trends", clear
+stset tte_hfn_out, id(patid) exit(time 10) failure(hfn_out==1)
+gen followup_time = _t 
+sum followup_time, detail 
+total followup_time
+
+*Men with non-ischaemic HF 
+use "...\overall_t2d_trends", clear
+keep if gender=="male"
+stset tte_hfn_out, id(patid) exit(time 10) failure(hfn_out==1)
+gen followup_time = _t 
+sum followup_time, detail 
+total followup_time
+
+*Women with non-ischaemic HF 
+use "...\overall_t2d_trends", clear
+keep if gender=="female"
+stset tte_hfn_out, id(patid) exit(time 10) failure(hfn_out==1)
+gen followup_time = _t 
+sum followup_time, detail 
+total followup_time
+
+*More detailed for table 1 
+*indexyear_cut = 2 [2000-2004]; 1 [2005-2009]
+//Men with ischaemic HF by diabetes status and indexyear (two periods)
+foreach indexyear in 2 1 {
+foreach t2d in 1 0 {
+use "...\overall_t2d_trends", clear
+keep if gender=="male" & t2d==`t2d' & indexyear_cut==`indexyear'
+tabulate t2d indexyear_cut 
+stset tte_hfi_out, id(patid) exit(time 10) failure(hfi_out==1)
+gen followup_time = _t 
+total followup_time
+}
+}
+
+//Women with ischaemic HF by diabetes status and indexyear (two periods)
+foreach indexyear in 2 1 {
+foreach t2d in 1 0 {
+use "...\overall_t2d_trends", clear
+keep if gender=="female" & t2d==`t2d' & indexyear_cut==`indexyear'
+tabulate t2d indexyear_cut 
+stset tte_hfi_out, id(patid) exit(time 10) failure(hfi_out==1)
+gen followup_time = _t 
+total followup_time
+}
+}
+
+//Men with non-ischaemic HF by diabetes status and indexyear (two periods)
+foreach indexyear in 2 1 {
+foreach t2d in 1 0 {
+use "...\overall_t2d_trends", clear
+keep if gender=="male" & t2d==`t2d' & indexyear_cut==`indexyear'
+tabulate t2d indexyear_cut 
+stset tte_hfn_out, id(patid) exit(time 10) failure(hfn_out==1)
+gen followup_time = _t 
+total followup_time
+}
+}
+
+//Women with non-ischaemic HF by diabetes status and indexyear (two periods)
+foreach indexyear in 2 1 {
+foreach t2d in 1 0 {
+use "...\overall_t2d_trends", clear
+keep if gender=="female" & t2d==`t2d' & indexyear_cut==`indexyear'
+tabulate t2d indexyear_cut 
+stset tte_hfn_out, id(patid) exit(time 10) failure(hfn_out==1)
+gen followup_time = _t 
+total followup_time
+}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+*Table 2: Number of events/total population ////////////////////////////////////////////////////////////////////////////////
+*sex: male = 2; female = 1
+tab gender 
+tab sex 
+
+*load data 
+use "...\overall_t2d_trends.dta", clear 
+
+//--------Ischaemic heart failure 
+stset tte_hfi_out, id(patid) exit(time 10) failure(hfi_out==1)
+replace _t = _t/1000			
+gen out = _d
+
+*men with t2d - Ischaemic heart failure  
+tab out indexyear_cut if gender=="male" & t2d == 1
+
+*women with t2d - Ischaemic heart failure 
+tab out indexyear_cut if gender=="female" & t2d == 1
+
+*men without diabetes - Ischaemic heart failure 
+tab out indexyear_cut if gender=="male" & t2d == 0
+
+*women without diabetes - Ischaemic heart failure 
+tab out indexyear_cut if gender=="female" & t2d == 0
+
+*load data 
+use "...\overall_t2d_trends.dta", clear 
+
+//--------Non-ischaemic heart failure 
+stset tte_hfn_out, id(patid) exit(time 10) failure(hfn_out==1)
+replace _t = _t/1000			
+gen out = _d
+
+*men with t2d - Non-ischaemic heart failure   
+tab out indexyear_cut if gender=="male" & t2d == 1
+
+*women with t2d - Non-ischaemic heart failure 
+tab out indexyear_cut if gender=="female" & t2d == 1
+
+*men without diabetes - Non-ischaemic heart failure  
+tab out indexyear_cut if gender=="male" & t2d == 0
+
+*women without diabetes - Non-ischaemic heart failure  
+tab out indexyear_cut if gender=="female" & t2d == 0
+
+////////////////////////////////////////////////////////////////////////////////
+*Table 2: Comparing two time periods (2000-2004 vs. 2005-2009) indexyear
+////////////////////////////////////////////////////////////////////////////////
+*female rates 
+use "...\overall_t2d_trends.dta", clear 
+tab gender 
+keep if gender=="female" 
+
+//10-year survival 
+drop if indexyear>2009
+
+//--------Ischaemic heart failure 
+stset tte_hfi_out, id(patid) exit(time 10) failure(hfi_out==1)
+replace _t = _t/1000			
+gen out = _d
+
+//ischaemic HF 
+*age-standardised rates 95%CI 
+poisson out i.t2d age ib2.indexyear_cut , exposure(_t) irr vce(robust) 
+margins ib2.indexyear_cut#i.t2d, predict(ir) at(age=60) post 
+
+//ischaemic HF 
+*age-adjusted IRR (95%CI) per indexyear_cut by diabetes status 
+*women with t2d 
+poisson out age ib2.indexyear_cut if t2d==1, exposure(_t) irr vce(robust)
+*women without diabetes
+poisson out age ib2.indexyear_cut if t2d==0, exposure(_t) irr vce(robust)
+
+//ischaemic HF 
+*fully-adjusted IRR (95%CI) per indexyear_cut by diabetes status 
+*women with t2d 
+poisson out ib2.indexyear_cut age BMI imd chol systolic i.CKD i.ethnic ib2.alcstatus ib2.smokstatus_cut i.asthma i.anaemia i.dementia i.cancer i.cld i.ra i.oa i.copd i.depression i.thy i.antiplat i.digoxin i.oral_hyper i.oral_lipid i.htn_BL i.af_BL if t2d==1, exposure(_t) irr vce(robust)
+*women without diabetes 
+poisson out ib2.indexyear_cut age BMI imd chol systolic i.CKD i.ethnic ib2.alcstatus ib2.smokstatus_cut i.asthma i.anaemia i.dementia i.cancer i.cld i.ra i.oa i.copd i.depression i.thy i.antiplat i.digoxin i.oral_hyper i.oral_lipid i.htn_BL i.af_BL if t2d==0, exposure(_t) irr vce(robust)
+ 
+//--------Non-ischaemic heart failure 
+use "...\overall_t2d_trends.dta", clear 
+tab gender 
+keep if gender=="female" 
+
+//10-year survival 
+drop if indexyear>2009
+
+//--------Non-ischaemic heart failure 
+stset tte_hfn_out, id(patid) exit(time 10) failure(hfn_out==1)
+replace _t = _t/1000			
+gen out = _d 
+
+//non-ischaemic HF
+*age-standardised rates 95%CI  
+poisson out ib2.indexyear_cut age i.t2d, exposure(_t) irr vce(robust) 
+margins ib2.indexyear_cut#i.t2d, predict(ir) at(age=60) post 
+
+//non-ischaemic HF
+*age-adjusted IRR (95%CI) per indexyear_cut by diabetes status 
+*women with t2d 
+poisson out ib2.indexyear_cut age if t2d==1, exposure(_t) irr vce(robust)
+*women without diabetes 
+poisson out ib2.indexyear_cut age if t2d==0, exposure(_t) irr vce(robust)
+
+//non-ischaemic HF
+*fully-adjusted IRR (95%CI) per indexyear_cut by diabetes status 
+*women with t2d 
+poisson out ib2.indexyear_cut age BMI chol systolic i.CKD i.ethnic ib2.alcstatus ib2.smokstatus_cut i.asthma i.anaemia i.dementia i.cancer i.cld i.ra i.oa i.copd i.depression i.thy i.digoxin i.oral_hyper i.antiplat i.oral_lipid i.htn_BL i.af_BL if t2d==1, exposure(_t) irr vce(robust)
+*women without diabetes 
+poisson out ib2.indexyear_cut age BMI chol systolic i.CKD i.ethnic ib2.alcstatus ib2.smokstatus_cut i.asthma i.anaemia i.dementia i.cancer i.cld i.ra i.oa i.copd i.antiplat i.depression i.thy i.digoxin i.oral_hyper i.oral_lipid i.htn_BL i.af_BL if t2d==0, exposure(_t) irr vce(robust)
+
+*male rates 
+use "...\overall_t2d_trends.dta", clear 
+tab gender 
+keep if gender=="male" 
+
+//10-year survival 
+drop if indexyear>2009
+
+//--------Ischaemic heart failure 
+stset tte_hfi_out, id(patid) exit(time 10) failure(hfi_out==1)
+replace _t = _t/1000			
+gen out = _d 
+
+//ischaemic HF 
+*age-standardised rates 95%CI 
+poisson out age i.t2d ib2.indexyear_cut , exposure(_t) irr vce(robust) 
+margins ib2.indexyear_cut#i.t2d, predict(ir) at(age=60) post 
+
+//ischaemic HF 
+*age-standardised IRR (95%CI) per indexyear_cut by diabetes status 
+*men with t2d 
+poisson out age ib2.indexyear_cut if t2d==1, exposure(_t) irr vce(robust)
+*men without diabetes
+poisson out age ib2.indexyear_cut if t2d==0, exposure(_t) irr vce(robust)
+
+//ischaemic HF 
+*fully-adjusted IRR (95%CI) per indexyear_cut by diabetes status 
+*men with t2d 
+poisson out ib2.indexyear_cut age BMI imd chol systolic i.CKD i.ethnic ib2.alcstatus ib2.smokstatus_cut i.asthma i.anaemia i.dementia i.cancer i.cld i.ra i.oa i.copd i.depression i.thy i.antiplat i.digoxin i.oral_hyper i.oral_lipid i.htn_BL i.af_BL if t2d==1, exposure(_t) irr vce(robust)
+*men without diabetes 
+poisson out ib2.indexyear_cut age BMI imd chol systolic i.CKD i.ethnic ib2.alcstatus ib2.smokstatus_cut i.asthma i.anaemia i.dementia i.cancer i.cld i.ra i.oa i.copd i.depression i.thy i.antiplat i.digoxin i.oral_hyper i.oral_lipid i.htn_BL i.af_BL if t2d==0, exposure(_t) irr vce(robust)
+
+//--------Non-ischaemic heart failure 
+use "...\overall_t2d_trends.dta", clear 
+tab gender 
+keep if gender=="male" 
+
+//10-year survival 
+drop if indexyear>2009
+
+//--------Non-ischaemic heart failure 
+stset tte_hfn_out, id(patid) exit(time 10) failure(hfn_out==1)
+replace _t = _t/1000			
+gen out = _d 
+
+//non-ischaemic HF
+*age-standardised rates 95%CI  
+poisson out age i.t2d ib2.indexyear_cut, exposure(_t) irr vce(robust) 
+margins ib2.indexyear_cut#i.t2d, predict(ir) at(age=60) post 
+
+//non-ischaemic HF
+*age-standardised IRR (95%CI) per indexyear_cut by diabetes status 
+*men with t2d 
+poisson out ib2.indexyear_cut age if t2d==1, exposure(_t) irr vce(robust)
+*men without diabetes 
+poisson out ib2.indexyear_cut age if t2d==0, exposure(_t) irr vce(robust)
+
+//non-ischaemic HF
+*fully-adjusted IRR (95%CI) per indexyear_cut by diabetes status 
+*men with t2d 
+poisson out ib2.indexyear_cut age BMI chol systolic i.CKD i.ethnic ib2.alcstatus ib2.smokstatus_cut i.asthma i.anaemia i.dementia i.cancer i.cld i.ra i.oa i.copd i.depression i.thy i.digoxin i.oral_hyper i.antiplat i.oral_lipid i.htn_BL i.af_BL if t2d==1, exposure(_t) irr vce(robust)
+*men without diabetes 
+poisson out ib2.indexyear_cut age BMI chol systolic i.CKD i.ethnic ib2.alcstatus ib2.smokstatus_cut i.asthma i.anaemia i.dementia i.cancer i.cld i.ra i.oa i.copd i.antiplat i.depression i.thy i.digoxin i.oral_hyper i.oral_lipid i.htn_BL i.af_BL if t2d==0, exposure(_t) irr vce(robust)
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+*Figure1: Sex-stratified trends for ischaemic and non-ischaemic HF in people with and without type 2 diabetes 
+*10-year survival 
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+*load data 
+use "...\overall_t2d_trends", clear 
+
+//10-year survival 
+drop if indexyear>2009
+
+//--------Ischaemic heart failure 
+stset tte_hfi_out, id(patid) exit(time 10) failure(hfi_out==1)
+replace _t = _t/1000			
+gen out = _d 
+
+*jj = t2d (1 = t2d; 0 = without diabetes)
+foreach t2d in 0 1 {															
+	preserve  									
+	poisson out age indexyear##sex if t2d == `t2d', exposure(_t) irr vce(robust) 	
+	margins indexyear#sex if t2d == `t2d', predict(ir) at(age=60) post
+	parmest, fast
+	gen t2d = `t2d'
+	tempfile t2d_`t2d'
+	save `t2d_`t2d'', replace
+	restore
+}
+
+*graph
+use `t2d_0', clear
+append using `t2d_1'
+split parm, p(.)
+rename parm1 year 
+destring year, replace 
+split parm2, p(#)
+rename parm22 sex
+destring sex, replace 
+
+* Ischaemic graph for men (sex==2) (10-year survival)
+twoway (connected estimate year if t2d == 1 & sex == 2, sort mcolor(red) lcolor(red) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 2, sort lcolor(red) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & sex == 2, sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 2, sort lcolor(blue) lwidth(thin)), ///
+       ytitle("Age-standardised rate" "(per 1,000 person-years)", size(huge)) ///
+       ylabel(0.1 0.5 1 2 3 4, labsize(huge)) ///
+       xtitle("  ", size(large)) ///
+       title("A. Ischaemic heart failure", size(huge) pos(11)) ///
+       xlabel(2000(1)2009, nolabels) ///
+       legend(order(1 "Men with T2D" 3 "Men without diabetes") region(fcolor(none)) position(1) ring(0)) ///
+       legend(size(vlarge)) ///
+       xsize(5) ///
+       ysize(4) ///
+       yscale(log) ///
+       name(male_i10, replace)
+	   
+* Ischaemic graph for women (sex==1) (10-year survival)
+twoway (connected estimate year if t2d == 1 & sex == 1, sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 1, sort lcolor(orange) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & sex == 1, sort mcolor(green) lcolor(green) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 1, sort lcolor(green) lwidth(thin)), ///
+       ytitle("  ", size(large)) ///
+       ylabel(0.1 0.5 1 2 3 4, labsize(huge)) ///
+       xtitle("  ", size(large)) ///
+       title("  ", size(vhuge) pos(11))  ///
+       xlabel(2000(1)2009, nolabels) ///
+       legend(order(1 "Women with T2D" 3 "Women without diabetes") region(fcolor(none)) position(1) ring(0)) ///
+       legend(size(vlarge)) ///
+       xsize(5) ///
+       ysize(4) ///
+       yscale(log) ///
+       name(female_i10, replace)
+	   
+//--------Non-ischaemic heart failure 
+use "...\overall_t2d_trends", clear 
+
+*10-year survival 
+drop if indexyear>2009
+
+//run model 
+stset tte_hfn_out, id(patid) exit(time 10) failure(hfn_out==1)
+replace _t = _t/1000	
+gen out =_d 		
+
+*t2d= 1 = t2d; 0  = without diabetes 
+foreach t2d in 0 1 {															
+	preserve  									
+	poisson out age indexyear##sex if t2d == `t2d', exposure(_t) irr vce(robust) 	
+	margins indexyear#sex if t2d == `t2d', predict(ir) at(age=60) post
+	parmest, fast
+	gen t2d = `t2d'
+	tempfile t2d_`t2d'
+	save `t2d_`t2d'', replace
+	restore
+}
+
+*graph
+use `t2d_0', clear
+append using `t2d_1'
+split parm, p(.)
+rename parm1 year 
+destring year, replace 
+split parm2, p(#)
+rename parm22 sex
+destring sex, replace 
+
+* Non-ischaemic graph for men (sex==2) (10-year survival)
+twoway (connected estimate year if t2d == 1 & sex == 2, sort mcolor(red) lcolor(red) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 2, sort lcolor(red) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & sex == 2, sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 2, sort lcolor(blue) lwidth(thin)), ///
+       ytitle("Age-standardised rate" "(per 1,000 person-years)", size(huge)) ///
+       ylabel(0.1 0.5 1 2 3 4, labsize(huge)) ///
+       xtitle("Years", size(huge)) ///
+       title("B. Non-ischaemic heart failure", size(huge) pos(11)) ///
+       xlabel(2000(1)2009, labsize(huge) angle(45)) ///
+       legend(off) ///
+	   yscale(log) ///
+       name(male_ni10, replace)
+
+* Non-ischaemic graph for women (sex==1) (10-year survival)
+twoway (connected estimate year if t2d == 1 & sex == 1, sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 1, sort lcolor(orange) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & sex == 1, sort mcolor(green) lcolor(green) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 1, sort lcolor(green) lwidth(thin)), ///
+       ytitle("  " "") ///
+       ylabel(0.1 0.5 1 2 3 4, labsize(huge)) ///
+       xtitle("Years", size(huge)) ///
+       title("  ", size(vhuge) pos(11))  ///
+       xlabel(2000(1)2009, labsize(huge) angle(45)) ///
+       legend(off) ///
+	   yscale(log) ///
+       name(female_ni10, replace)
+	   
+*graph save  
+graph combine male_i10 female_i10 male_ni10 female_ni10, cols(2) rows(2) iscale(*0.5) ycommon name(sex_10y, replace)
+graph save "sex_10y" "...\sex_10y.gph", replace 
+graph export "...\sex_10y.jpg", replace as(jpg) name("sex_10y") width(8000) height(5000) quality(100) 
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+*Figure2: Age-Sex stratified trends for ischaemic and non-ischaemic heart failure in people with and without diabetes 
+*10-year survival 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+//load data 
+use "...\overall_t2d_trends", clear
+
+//male 
+keep if gender=="male" 
+
+//male 10-year survival 
+drop if indexyear>2009
+
+//--------Ischaemic heart failure - age-specific (10-year)
+stset tte_hfi_out, id(patid) exit(time 10) failure(hfi_out==1) 
+replace _t = _t/1000
+gen out =_d 
+
+forvalues jj = 0/1 {
+	preserve  										
+	poisson out i.indexyear##i.age_cut if t2d == `jj', exposure(_t) irr vce(robust) 	
+	margins i.indexyear#i.age_cut if t2d == `jj', predict(ir) post
+	parmest, fast
+	gen t2d = `jj'
+	tempfile t2d_`jj'
+	save `t2d_`jj'', replace
+	restore
+}
+
+*graph
+use `t2d_0', clear
+append using `t2d_1'
+split parm, p(.)
+destring parm1, replace
+rename parm1 year 
+split parm2, p(#)
+rename parm22 age_group
+drop parm2 parm21 parm3 
+destring age_group, replace 
+
+*graph - men aged <60 
+twoway (connected estimate year if t2d == 1 & age_group == 1, sort mcolor(red) lcolor(red) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & age_group == 1, sort lcolor(red) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & age_group == 1, sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & age_group == 1, sort lcolor(blue) lwidth(thin)), ///
+       ytitle("Crude rate" "(per 1,000 person-years)", size(huge)) ///
+	   yscale(log) ylabel(0.1 1 5 10 20 30 40, labsize(medlarge)) ///
+       xtitle("  ", size(large)) title("  ") ///
+	   title("A. Ischaemic heart failure", size(huge) pos(11)) ///
+	   subtitle("<60 years", size(huge)) ///
+       xlabel(2000(1)2009,nolabels) ///
+	   legend(order(1 "Men with T2D" 3 "Men without diabetes") region(fcolor(none)) position(11) ring(0) col(5)) ///
+       legend(size(vlarge)) ///
+       name(male_10iage1, replace)
+	 
+*graph - men aged 60-69 
+	   twoway (connected estimate year if t2d == 1 & age_group == 2, sort mcolor(red) lcolor(red) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & age_group == 2, sort lcolor(red) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & age_group == 2, sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & age_group == 2, sort lcolor(blue) lwidth(thin)), ///
+       ytitle("  " "") yscale(log) ylabel(0.1 1 5 10 20 30 40, labsize(medlarge)) ///
+       xtitle("  ", size(large)) ///
+	   title("  ") ///
+	   subtitle("60-69 years", size(huge)) ///
+       xlabel(2000(1)2009, nolabels) ///
+       legend(off) name(male_10iage2, replace)
+	   
+*graph - men aged 70-79 
+	   twoway (connected estimate year if t2d == 1 & age_group == 3, sort mcolor(red) lcolor(red) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & age_group == 3, sort lcolor(red) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & age_group == 3, sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & age_group == 3, sort lcolor(blue) lwidth(thin)), ///
+       ytitle("  " "") yscale(log) ylabel(0.1 1 5 10 20 30 40, labsize(medlarge)) /// ///
+       xtitle("  ", size(large)) ///
+	   title("  ") ///
+	   subtitle("70-79 years", size(huge)) ///
+       xlabel(2000(1)2009, nolabels) ///
+       legend(off) name(male_10iage3, replace)
+
+*graph - men aged ≥80 
+twoway (connected estimate year if t2d == 1 & age_group == 4, sort mcolor(red) lcolor(red) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & age_group == 4, sort lcolor(red) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & age_group == 4, sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & age_group == 4, sort lcolor(blue) lwidth(thin)), ///
+       ytitle("  " "") yscale(log) ylabel(0.1 1 5 10 20 30 40, labsize(medlarge)) /// ///
+       xtitle("  ", size(large)) ///
+	   title("  ") ///
+	   subtitle("≥80 years",size(huge)) ///
+       xlabel(2000(1)2009, nolabels) ///
+       legend(off) name(male_10iage4, replace)
+	   
+//--------Non-ischaemic heart failure - age-specific (10-year)
+use "...\overall_t2d_trends", clear
+
+//male 
+keep if gender=="male" 
+
+//male 10-year survival 
+drop if indexyear>2009
+
+//load data 
+stset tte_hfn_out, id(patid) exit(time 10) failure(hfn_out==1)
+replace _t = _t/1000
+gen out =_d 
+
+forvalues jj = 0/1 {
+	preserve  										
+	poisson out i.indexyear##i.age_cut if t2d == `jj', exposure(_t) irr vce(robust) 	
+	margins i.indexyear#i.age_cut if t2d == `jj', predict(ir) post
+	parmest, fast
+	gen t2d = `jj'
+	tempfile t2d_`jj'
+	save `t2d_`jj'', replace
+	restore
+}
+
+*graph
+use `t2d_0', clear
+append using `t2d_1'
+split parm, p(.)
+destring parm1, replace
+rename parm1 year 
+split parm2, p(#)
+rename parm22 age_group
+drop parm2 parm21 parm3 
+destring age_group, replace 
+
+       *graph - men aged <60
+twoway (connected estimate year if t2d == 1 & age_group == 1, sort mcolor(red) lcolor(red) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & age_group == 1, sort lcolor(red) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & age_group == 1, sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & age_group == 1, sort lcolor(blue) lwidth(thin)), ///
+       ytitle("Crude rate" "(per 1,000 person-years)", size(huge)) ///
+       yscale(log) ylabel(0.1 1 5 10 20 30 40, labsize(medlarge)) ///
+       xtitle("  ", size(large)) title("  ") ///
+       title("B. Non-ischaemic heart failure", size(huge) pos(11)) ///
+       xlabel(2000(1)2009, nolabels) ///
+       legend(order(1 "Men with T2D" 3 "Men without diabetes") region(fcolor(none)) position(11) ring(0) col(5)) ///
+       legend(size(vlarge)) ///
+       name(male_10niage1, replace)
+	   
+	   *graph - men aged 60-69 
+twoway (connected estimate year if t2d == 1 & age_group == 2, sort mcolor(red) lcolor(red) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & age_group == 2, sort lcolor(red) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & age_group == 2, sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & age_group == 2, sort lcolor(blue) lwidth(thin)), ///
+       ytitle("  " " ") yscale(log) ylabel(0.1 1 5 10 20 30 40, labsize(medlarge)) /// ///
+       xtitle("  ", size(large)) title("  ") ///
+       xlabel(2000(1)2009, nolabels) ///
+       legend(off) name(male_10niage2, replace)
+	   
+	    *graph - men aged 70-79 
+twoway (connected estimate year if t2d == 1 & age_group == 3, sort mcolor(red) lcolor(red) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & age_group == 3, sort lcolor(red) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & age_group == 3, sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & age_group == 3, sort lcolor(blue) lwidth(thin)), ///
+       ytitle("  " "") yscale(log) ylabel(0.1 1 5 10 20 30 40, labsize(medlarge)) /// ///
+       xtitle("  ", size(huge)) title("  ") ///
+       xlabel(2000(1)2009, nolabels) ///
+       legend(off) name(male_10niage3, replace)
+
+	    *graph - men aged ≥80 
+twoway (connected estimate year if t2d == 1 & age_group == 4, sort mcolor(red) lcolor(red) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & age_group == 4, sort lcolor(red) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & age_group == 4, sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & age_group == 4, sort lcolor(blue) lwidth(thin)), ///
+       ytitle("  " "") yscale(log) ylabel(0.1 1 5 10 20 30 40, labsize(medlarge)) /// ///
+       xtitle("  ", size(large)) title("  ") ///
+       xlabel(2000(1)2009, nolabels) ///
+       legend(off) name(male_10niage4, replace)
+	   
+//female cohort 
+use "...\overall_t2d_trends", clear
+
+//female 
+keep if gender=="female" 
+
+//female 10-year survival 
+drop if indexyear>2009
+
+//--------Ischaemic heart failure - age-specific (10-year)
+*exit(5) = you stop all observations at maximum 10 years  
+stset tte_hfi_out, id(patid) exit(time 10) failure(hfi_out==1) 
+replace _t = _t/1000
+gen out =_d 
+
+forvalues jj = 0/1 {
+	preserve  										
+	poisson out i.indexyear##i.age_cut if t2d == `jj', exposure(_t) irr vce(robust) 	
+	margins i.indexyear#i.age_cut if t2d == `jj', predict(ir) post
+	parmest, fast
+	gen t2d = `jj'
+	tempfile t2d_`jj'
+	save `t2d_`jj'', replace
+	restore
+}
+
+*graph
+use `t2d_0', clear
+append using `t2d_1'
+split parm, p(.)
+destring parm1, replace
+rename parm1 year 
+split parm2, p(#)
+rename parm22 age_group
+drop parm2 parm21 parm3 
+destring age_group, replace 
+
+*graph - women aged <60  
+twoway (connected estimate year if t2d == 1 & age_group == 1, sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & age_group == 1, sort lcolor(orange) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & age_group == 1, sort mcolor(green) lcolor(green) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & age_group == 1, sort lcolor(green) lwidth(thin)), ///
+       ytitle("Crude rate" "(per 1,000 person-years)", size(huge)) ///
+	   yscale(log) ylabel(0.1 1 5 10 20 30 40, labsize(medlarge)) ///
+       xtitle("  ", size(large)) title("  ") ///
+       xlabel(2000(1)2009, nolabels) ///
+        legend(order(1 "Women with T2D" 3 "Women without diabetes") region(fcolor(none)) position(11) ring(0) col(5)) ///
+       legend(size(vlarge)) ///
+	   name(female_10iage1, replace)
+
+*graph - women aged 60-69 
+twoway (connected estimate year if t2d == 1 & age_group == 2, sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & age_group == 2, sort lcolor(orange) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & age_group == 2, sort mcolor(green) lcolor(green) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & age_group == 2, sort lcolor(green) lwidth(thin)), ///
+       ytitle(" ") yscale(log) ylabel(0.1 1 5 10 20 30 40, labsize(medlarge)) /// ///
+       xtitle("  ", size(large)) title("  ") ///
+       xlabel(2000(1)2009, nolabels) ///
+       legend(off) name(female_10iage2, replace)
+	   
+*graph - women aged 70-79 
+	   twoway (connected estimate year if t2d == 1 & age_group == 3, sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & age_group == 3, sort lcolor(orange) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & age_group == 3, sort mcolor(green) lcolor(green) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & age_group == 3, sort lcolor(green) lwidth(thin)), ///
+       ytitle("  " "") yscale(log) ylabel(0.1 1 5 10 20 30 40, labsize(medlarge)) /// ///
+       xtitle("  ", size(large)) title("  ") ///
+       xlabel(2000(1)2009, nolabels) ///
+       legend(off) name(female_10iage3, replace)
+
+*graph - women aged ≥80 
+twoway (connected estimate year if t2d == 1 & age_group == 4, sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & age_group == 4, sort lcolor(orange) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & age_group == 4, sort mcolor(green) lcolor(green) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & age_group == 4, sort lcolor(green) lwidth(thin)), ///
+       ytitle("  " "") yscale(log) ylabel(0.1 1 5 10 20 30 40, labsize(medlarge)) /// ///
+       xtitle("  ", size(large)) title("  ") ///
+       xlabel(2000(1)2009, nolabels) ///
+       legend(off) name(female_10iage4, replace)
+	  
+//--------Non-ischaemic heart failure - age-specific (10-year)
+use "...\overall_t2d_trends", clear
+
+//female 
+keep if gender=="female" 
+
+//female 10-year survival 
+drop if indexyear>2009
+
+//load data 
+stset tte_hfn_out, id(patid) exit(time 10) failure(hfn_out==1)
+replace _t = _t/1000
+gen out =_d 
+
+forvalues jj = 0/1 {
+	preserve  										
+	poisson out i.indexyear##i.age_cut if t2d == `jj', exposure(_t) irr vce(robust) 	
+	margins i.indexyear#i.age_cut if t2d == `jj', predict(ir) post
+	parmest, fast
+	gen t2d = `jj'
+	tempfile t2d_`jj'
+	save `t2d_`jj'', replace
+	restore
+}
+
+*graph
+use `t2d_0', clear
+append using `t2d_1'
+split parm, p(.)
+destring parm1, replace
+rename parm1 year 
+split parm2, p(#)
+rename parm22 age_group
+drop parm2 parm21 parm3 
+destring age_group, replace 
+
+*graph - women aged <60 
+twoway (connected estimate year if t2d == 1 & age_group == 1, sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & age_group == 1, sort lcolor(orange) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & age_group == 1, sort mcolor(green) lcolor(green) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & age_group == 1, sort lcolor(green) lwidth(thin)), ///
+       ytitle("Crude rate" "(per 1,000 person-years)", size(huge)) ///
+	   yscale(log) ylabel(0.1 1 5 10 20 30 40, labsize(medlarge)) ///
+       xtitle("Years", size(huge)) ///
+	   title("  ") ///
+       xlabel(2000(1)2009, labsize(huge) angle(45)) ///
+       legend(order(1 "Women with T2D" 3 "Women without diabetes") region(fcolor(none)) position(11) ring(0) col(5)) ///
+       legend(size(vlarge)) ///
+	   name(female_10niage1, replace)
+
+*graph - women aged 60-69  
+twoway ///
+    (connected estimate year if t2d == 1 & age_group == 2, sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 1 & age_group == 2, sort lcolor(orange) lwidth(thin)) ///
+    (connected estimate year if t2d == 0 & age_group == 2, sort mcolor(green) lcolor(green) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 0 & age_group == 2, sort lcolor(green) lwidth(thin)), ///
+    ytitle("  ", size(huge)) ///
+    yscale(log) ///
+	ylabel(0.1 1 5 10 20 30 40, labsize(medlarge)) /// ///
+    xtitle("Years", size(huge)) ///
+	title("  ") ///
+    xlabel(2000(1)2009, labsize(huge) angle(45)) ///
+    legend(off) ///
+	name(female_10niage2, replace) ///
+	   
+*graph - women aged 70-79 
+twoway ///
+    (connected estimate year if t2d == 1 & age_group == 3, sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 1 & age_group == 3, sort lcolor(orange) lwidth(thin)) ///
+    (connected estimate year if t2d == 0 & age_group == 3, sort mcolor(green) lcolor(green) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 0 & age_group == 3, sort lcolor(green) lwidth(thin)), ///
+    ytitle("  ", size(huge)) ///
+    yscale(log) ///
+	ylabel(0.1 1 5 10 20 30 40, labsize(medlarge)) /// ///
+    xtitle("Years", size(huge)) ///
+	title("  ") ///
+    xlabel(2000(1)2009, labsize(huge) angle(45)) ///
+    legend(off) ///
+    name(female_10niage3, replace)
+
+*graph - women aged >79 
+twoway ///
+    (connected estimate year if t2d == 1 & age_group == 4, sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 1 & age_group == 4, sort lcolor(orange) lwidth(thin)) ///
+    (connected estimate year if t2d == 0 & age_group == 4, sort mcolor(green) lcolor(green) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 0 & age_group == 4, sort lcolor(green) lwidth(thin)), ///
+    ytitle("  ", size(huge)) ///
+    yscale(log) ///
+	ylabel(0.1 1 5 10 20 30 40, labsize(medlarge)) /// ///
+    xtitle("Years", size(huge)) ///
+	title("  ") ///
+    xlabel(2000(1)2009, labsize(huge) angle(45)) ///
+    legend(off) ///
+    name(female_10niage4, replace)
+	   
+*graph combine  
+graph combine male_10iage1 male_10iage2 male_10iage3 male_10iage4 ///
+              female_10iage1 female_10iage2 female_10iage3 female_10iage4 ///
+              male_10niage1 male_10niage2 male_10niage3 male_10niage4 ///
+              female_10niage1 female_10niage2 female_10niage3 female_10niage4, ///
+              cols(4) rows(4) xsize(40) ysize(20) iscale(*0.5) ///
+              imargin(0 0 0 0) ///
+              ycommon ///
+              name(age_10y, replace)
+
+graph save "age_10y" "...\age_10y.gph", replace 
+graph export "...\age_10y.jpg", replace as(jpg) name("age_10y") width(3000) height(2000) quality(100)
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+*Supplemental Figure: Sex-deprivation (IMD) stratified trends for ischaemic and non-ischaemic heart failure in people with and without type 2 diabetes  
+*10-year survival 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+*load data 
+use "...\overall_t2d_trends", clear 
+keep if gender=="male" 
+
+//male 10-year survival 
+drop if indexyear>2009
+
+//--------Ischaemic heart failure - imd-specific (10-year)
+stset tte_hfi_out, id(patid) exit(time 10) failure(hfi_out==1) 
+replace _t = _t/1000
+gen out =_d 
+
+forvalues jj = 0/1 {
+	preserve  										
+	poisson out age i.indexyear##i.imd_cut if t2d == `jj', exposure(_t) irr vce(robust) 	
+	margins i.indexyear#i.imd_cut if t2d == `jj', predict(ir) at(age=60) post
+	parmest, fast
+	gen t2d = `jj'
+	tempfile t2d_`jj'
+	save `t2d_`jj'', replace
+	restore
+}
+
+*graph
+use `t2d_0', clear
+append using `t2d_1'
+split parm, p(.)
+destring parm1, replace
+rename parm1 year 
+split parm2, p(#)
+rename parm22 imd_cut 
+destring imd_cut, replace 
+
+* Graph - Men with T2D 
+twoway ///
+    (connected estimate year if t2d == 1 & imd_cut == 5, sort mcolor(green) lcolor(green) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 1 & imd_cut == 5, sort lcolor(green) lwidth(thin)) ///
+    (connected estimate year if t2d == 1 & imd_cut == 1, sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 1 & imd_cut == 1, sort lcolor(orange) lwidth(thin)), ///
+    xtitle("  ", size(huge)) ///
+    ytitle("Age-standardised rate" "(per 1,000 person-years)", size(huge)) ///
+    title("A. Ischaemic heart failure", size(huge) pos(11)) ///
+    ylabel(0.1 0.5 1 2 4 6, labsize(large)) ///
+    xlabel(2000(1)2009, nolabels) ///
+    legend(order(1 "Most deprived" 3 "Least deprived") ///
+    region(fcolor(none)) position(11) ring(0) col(1)) ///
+    legend(size(vlarge)) ///
+	subtitle("Men with T2D", size(vlarge)) ///
+    xsize(5) ///
+    ysize(4) ///
+    yscale(log) ///
+    name(male_iimd1_10y, replace)
+
+* Graph - Men without diabetes
+twoway ///
+    (connected estimate year if t2d == 0 & imd_cut == 5, sort mcolor(green) lcolor(green) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 0 & imd_cut == 5, sort lcolor(green) lwidth(thin)) ///
+    (connected estimate year if t2d == 0 & imd_cut == 1, sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 0 & imd_cut == 1, sort lcolor(orange) lwidth(thin)), ///
+    xtitle("  ", size(huge)) ///
+    title("  ", size(large)) ///
+    xlabel(2000(1)2009, nolabels) ///
+    ytitle("  ", size(large)) ///
+    ylabel(0.1 0.5 1 2 4 6, labsize(large)) ///
+    legend(order(1 "Most deprived" 3 "Least deprived") ///
+           region(fcolor(none)) position(11) ring(0) col(1)) ///
+    legend(size(vlarge)) ///
+	subtitle("Men without diabetes", size(vlarge)) ///
+    xsize(5) ///
+    ysize(4) ///
+    yscale(log) ///
+    name(male_iimd5_10y, replace)
+	
+//--------Non-ischaemic heart failure - imd - stratified (10-year)
+use "...\overall_t2d_trends", clear 
+keep if gender=="male" 
+
+//male 10-year survival 
+drop if indexyear>2009
+
+//--------Non-ischaemic heart failure - imd-specific (10-year)
+stset tte_hfn_out, id(patid) exit(time 10) failure(hfn_out==1) 
+replace _t = _t/1000
+gen out =_d 
+
+forvalues jj = 0/1 {
+	preserve  										
+	poisson out age i.indexyear##i.imd_cut if t2d == `jj', exposure(_t) irr vce(robust) 	
+	margins i.indexyear#i.imd_cut if t2d == `jj', predict(ir) at(age=60) post
+	parmest, fast
+	gen t2d = `jj'
+	tempfile t2d_`jj'
+	save `t2d_`jj'', replace
+	restore
+}
+
+*graph
+use `t2d_0', clear
+append using `t2d_1'
+split parm, p(.)
+destring parm1, replace
+rename parm1 year 
+split parm2, p(#)
+rename parm22 imd_cut 
+destring imd_cut, replace 
+
+* Graph - Men with T2D 
+twoway ///
+    (connected estimate year if t2d == 1 & imd_cut == 5, sort mcolor(green) lcolor(green) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 1 & imd_cut == 5, sort lcolor(green) lwidth(thin)) ///
+    (connected estimate year if t2d == 1 & imd_cut == 1, sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 1 & imd_cut == 1, sort lcolor(orange) lwidth(thin)), ///
+    xtitle("Years", size(huge)) ///
+    ytitle("Age-standardised rate" "(per 1,000 person-years)", size(huge)) ///
+    title("B. Non-ischaemic heart failure", size(huge)) ///
+    ylabel(0.1 0.5 1 2 4 6, labsize(large)) ///
+    xlabel(2000(1)2009, labsize(huge) angle(45)) ///
+    legend(off) ///
+    xsize(5) ///
+    ysize(4) ///
+    yscale(log) ///
+    name(male_niimd1_10y, replace)
+
+* Graph - Men without diabetes 
+twoway ///
+    (connected estimate year if t2d == 0 & imd_cut == 5, sort mcolor(green) lcolor(green) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 0 & imd_cut == 5, sort lcolor(green) lwidth(thin)) ///
+    (connected estimate year if t2d == 0 & imd_cut == 1, sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 0 & imd_cut == 1, sort lcolor(orange) lwidth(thin)), ///
+    xtitle("Years", size(huge)) ///
+    title("  ", size(large)) ///
+    xlabel(2000(1)2009, labsize(huge) angle(45)) ///
+    ytitle("  ", size(large)) ///
+    ylabel(0.1 0.5 1 2 4 6, labsize(large)) ///
+    legend(off) ///
+    xsize(5) ///
+    ysize(4) ///
+    yscale(log) ///
+    name(male_niimd5_10y, replace)
+
+use "...\overall_t2d_trends", clear 
+keep if gender=="female" 
+
+//female 10-year survival 
+drop if indexyear>2009
+
+//--------Ischaemic heart failure - imd-specific (10-year)
+stset tte_hfi_out, id(patid) exit(time 10) failure(hfi_out==1) 
+replace _t = _t/1000
+gen out =_d 
+
+forvalues jj = 0/1 {
+	preserve  										
+	poisson out age i.indexyear##i.imd_cut if t2d == `jj', exposure(_t) irr vce(robust) 	
+	margins i.indexyear#i.imd_cut if t2d == `jj', predict(ir) at(age=60) post
+	parmest, fast
+	gen t2d = `jj'
+	tempfile t2d_`jj'
+	save `t2d_`jj'', replace
+	restore
+}
+
+*graph
+use `t2d_0', clear
+append using `t2d_1'
+split parm, p(.)
+destring parm1, replace
+rename parm1 year 
+split parm2, p(#)
+rename parm22 imd_cut 
+destring imd_cut, replace 
+
+* Graph - Women with T2D 
+twoway ///
+    (connected estimate year if t2d == 1 & imd_cut == 5, sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 1 & imd_cut == 5, sort lcolor(blue) lwidth(thin)) ///
+    (connected estimate year if t2d == 1 & imd_cut == 1, sort mcolor(red) lcolor(red) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 1 & imd_cut == 1, sort lcolor(red) lwidth(thin)), ///
+    xtitle("  ", size(huge)) ///
+    title("  ", size(large)) ///
+    ylabel(0.1 0.5 1 2 4 6, labsize(large)) ///
+    xlabel(2000(1)2009, nolabels labsize(large) angle(45)) ///
+    ytitle("  " "") ///
+    legend(order(1 "Most deprived" 3 "Least deprived") region(fcolor(none)) position(11) ring(0) col(1)) ///
+    legend(size(vlarge)) ///
+    xsize(5) ///
+    ysize(4) ///
+    yscale(log) ///
+	subtitle("Women with T2D", size(vlarge)) ///
+    name(female_iimd1_10y, replace)
+
+* Graph - Women without diabetes  
+twoway ///
+    (connected estimate year if t2d == 0 & imd_cut == 5, sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 0 & imd_cut == 5, sort lcolor(blue) lwidth(thin)) ///
+    (connected estimate year if t2d == 0 & imd_cut == 1, sort mcolor(red) lcolor(red) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 0 & imd_cut == 1, sort lcolor(red) lwidth(thin)), ///
+    xtitle("  ", size(huge)) ///
+    title("  ", size(large)) ///
+    xlabel(2000(1)2009, nolabels labsize(large) angle(45)) ///
+    ytitle("  ", size(large)) ///
+    ylabel(0.1 0.5 1 2 4 6, labsize(large)) ///
+    legend(order(1 "Most deprived" 3 "Least deprived") region(fcolor(none)) position(11) ring(0) col(1)) ///
+    legend(size(vlarge)) ///
+    xsize(5) ///
+    ysize(4) ///
+    yscale(log) ///
+    subtitle("Women without diabetes", size(vlarge)) ///
+    name(female_iimd5_10y, replace)
+
+//--------Non-ischaemic heart failure - imd - stratified (10-year)
+use "...\overall_t2d_trends", clear 
+keep if gender=="female" 
+
+//female 10-year survival 
+drop if indexyear>2009
+
+//--------Non-Ischaemic heart failure - imd-specific (10-year)
+stset tte_hfn_out, id(patid) exit(time 10) failure(hfn_out==1) 
+replace _t = _t/1000
+gen out =_d 
+
+forvalues jj = 0/1 {
+	preserve  										
+	poisson out age i.indexyear##i.imd_cut if t2d == `jj', exposure(_t) irr vce(robust) 	
+	margins i.indexyear#i.imd_cut if t2d == `jj', predict(ir) at(age=60) post
+	parmest, fast
+	gen t2d = `jj'
+	tempfile t2d_`jj'
+	save `t2d_`jj'', replace
+	restore
+}
+
+*graph
+use `t2d_0', clear
+append using `t2d_1'
+split parm, p(.)
+destring parm1, replace
+rename parm1 year 
+split parm2, p(#)
+rename parm22 imd_cut 
+destring imd_cut, replace 
+
+* Graph - Women with T2D
+twoway ///
+    (connected estimate year if t2d == 1 & imd_cut == 5, sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 1 & imd_cut == 5, sort lcolor(blue) lwidth(thin)) ///
+    (connected estimate year if t2d == 1 & imd_cut == 1, sort mcolor(red) lcolor(red) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 1 & imd_cut == 1, sort lcolor(red) lwidth(thin)), ///
+    xtitle("Years", size(huge)) ///
+    title("  ") ///
+    xlabel(2000(1)2009, labsize(huge) angle(45)) ///
+	ylabel(0.1 0.5 1 2 4 6, labsize(large)) ///
+    ytitle("  ", size(large)) ///
+    yscale(log) ///
+    legend(off) ///
+    legend(size(vlarge)) ///
+    xsize(5) ///
+    ysize(4) ///
+    name(female_niimd1_10y, replace)
+
+* Graph - Women without diabetes
+twoway ///
+    (connected estimate year if t2d == 0 & imd_cut == 5, sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 0 & imd_cut == 5, sort lcolor(blue) lwidth(thin)) ///
+    (connected estimate year if t2d == 0 & imd_cut == 1, sort mcolor(red) lcolor(red) lwidth(thin)) ///
+    (rcap min95 max95 year if t2d == 0 & imd_cut == 1, sort lcolor(red) lwidth(thin)), ///
+    xtitle("Years", size(huge)) ///
+    title("  ") ///
+    xlabel(2000(1)2009, labsize(huge) angle(45)) ///
+    ytitle("  ", size(large)) ///
+    ylabel(0.1 0.5 1 2 4 6, labsize(large)) ///
+    yscale(log) ///
+    legend(off) ///
+    legend(size(vlarge)) ///
+    xsize(5) ///
+    ysize(4) ///
+    name(female_niimd5_10y, replace)
+	
+*graph combine 
+graph combine male_iimd1_10y male_iimd5_10y female_iimd1_10y female_iimd5_10y male_niimd1_10y male_niimd5_10y female_niimd1_10y female_niimd5_10y, cols(4) rows(2) ysize(8) xsize(16) iscale(*0.5) ycommon name(imd_10y, replace)
+graph save "imd_10y" "...\imd_10y.gph", replace 
+graph export "...\imd_10y.jpg", replace as(jpg) name("imd_10y") width(6000) height(4000) quality(100)
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+*Supplemental Figure: Sex-stratified trends for ischaemic and non-ischaemic heart failure in people with and without type 2 diabetes
+*5-year survival (drop if indexyear>2014)
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+*load dataset
+use "...\gold_cohort1.dta", clear 
+append using "...\aurum_cohort1.dta", force
+
+*clean data: 
+*Obesity (using test file)
+replace Obesity=0 if Obesity==. 
+count if missing(Obesity)
+
+*clean data: 
+*CKD (using test file)
+*ckd = medcodeid (clinical file)
+replace CKD=0 if CKD==.
+count if missing(CKD)
+
+*inclusion criterion check: drop if <18 age 
+gen index = date(indexdate, "DMY")
+format index %td
+gen indexyear = yofd(index)
+destring yob, replace 
+gen age = indexyear - yob 
+drop if age<18 
+
+*inclusion criterion check: keep if gender is female or male only 
+keep if gender=="female" | gender=="male" 
+tab gender 
+
+*count population 
+tab t2d
+
+*prepare data: convert days to years
+replace tt_dod=tt_dod/365
+replace tt_end=tt_end/365 
+replace tt_linkdate=tt_linkdate/365
+replace tt_lcd=tt_lcd/365
+replace tt_tod=tt_tod/365 
+foreach ot in hf ihdb {
+replace tt_`ot'_dod=tt_`ot'_dod/365 
+replace tt_`ot'_outh=tt_`ot'_outh/365
+replace tt_`ot'_outc=tt_`ot'_outc/365
+}
+
+////////////////////////////////////////////////////////////////////////////////
+*Define censoring/ survival time 
+////////////////////////////////////////////////////////////////////////////////
+
+******Death survival time (ONS OR HES OR CPRD) 
+egen tte_dod_out = rowmin(tt_dod tt_end tt_linkdate tt_tod tt_lcd) 
+*Create dod_out binary variable (censored)
+gen dod_out=1 if tte_dod_out==tt_dod
+replace dod_out=0 if missing(dod_out)
+
+******HF & other CVD survival time (ONS OR HES OR CPRD)
+*1.HES HF or death by HF (new definition of incident HF = HF in HES or death or CPRD) 
+foreach ot in hf ihdb {
+egen tt_`ot'_out = rowmin(tt_`ot'_outh tt_`ot'_dod tt_`ot'_outc) 
+gen `ot'_out=0 if missing(tt_`ot'_out)
+replace `ot'_out=1 if missing(hf_out) 
+}
+
+*2.generate row minimum variable (HES, date of death, linkdate, lcd, tod, end) 
+foreach ot in hf ihdb {
+egen tte_`ot'_out = rowmin(tt_`ot'_out tt_dod tt_end tt_linkdate tt_tod tt_lcd)
+}
+
+*3.censor data: relabel variable = 0 if time to event is NOT time to HF 
+foreach ot in hf ihdb {
+replace `ot'_out=0 if tte_`ot'_out!=tt_`ot'_out
+replace `ot'_out=1 if tte_`ot'_out==tt_`ot'_out
+}
+
+*******Ischaemic vs. Non-ischaemic HF survival time (ONS OR HES OR CPRD)********
+
+*4. define ischaemic-HF time to event variable 
+*if hf_out =1 & ihdb_out =1 
+gen tte_hfi_out= tte_hf_out if (tte_hf_out==tte_ihdb_out & hf_out==1 & ihdb_out==1) | (tte_ihdb_out < tte_hf_out & hf_out==1 & ihdb_out==1) 
+*replace remaining with censoring lod, lcd, tod, linkdate, dod
+egen hf_cens = rowmin(tt_dod tt_end tt_linkdate tt_tod tt_lcd)  
+replace tte_hfi_out = hf_cens if missing(tte_hfi_out)
+*indicator variable 
+gen hfi_out =1 if (tte_hf_out==tte_ihdb_out & hf_out==1 & ihdb_out==1) | (tte_ihdb_out < tte_hf_out & hf_out==1 & ihdb_out==1) 
+replace hfi_out=0 if missing(hfi_out)
+
+*5. .define non-ischaemic HF time to event variable 
+*defined by developing HF (without prior ischaemic heart disease)
+*HF and developing ihd after 
+gen tte_hfn_out= tte_hf_out if (tte_hf_out==tte_ihdb_out & hf_out==1 & ihdb_out==0) | (tte_ihdb_out < tte_hf_out & hf_out==1 & ihdb_out==0) | (tte_hf_out < tte_ihdb_out & hf_out==1 & ihdb_out==1) | (tte_hf_out < tte_ihdb_out & hf_out==1 & ihdb_out==0)
+*replace with censored data if ischaemic-HF 
+replace tte_hfn_out = hf_cens if missing(tte_hfn_out) 
+*indicator variable 
+gen hfn_out =1 if (tte_hf_out==tte_ihdb_out & hf_out==1 & ihdb_out==0) | (tte_ihdb_out < tte_hf_out & hf_out==1 & ihdb_out==0) | (tte_hf_out < tte_ihdb_out & hf_out==1 & ihdb_out==1) | (tte_hf_out < tte_ihdb_out & hf_out==1 & ihdb_out==0)
+replace hfn_out=0 if missing(hfn_out)
+
+*check 
+tab hf_out 
+tab hfi_out 
+tab hfn_out 
+
+*6. Create indicator variable 
+gen hf_type="ischaemic HF" if hfi_out==1 
+replace hf_type="non-ischaemic HF" if hfn_out==1 
+
+********Exclude if negative(-) time to event i.e. if last linkage date in HES, linkage date in ONS OR date of death is PRIOR to index date  
+
+//exclude dod prior or same as index 
+drop if date(indexdate, "DMY")>date(dod, "DMY") | date(indexdate, "DMY")==date(dod, "DMY") 
+
+//exclude linkdate prior or same as index 
+drop if date(indexdate, "DMY")>date(linkdate, "DMY") | date(indexdate, "DMY")==date(linkdate, "DMY")
+
+//exclude lcd prior or same as index 
+drop if date(indexdate, "DMY")>date(lcd, "DMY") | date(indexdate, "DMY")==date(lcd, "DMY") 
+
+//exclude tod prior or same as index 
+drop if date(indexdate, "DMY")>date(tod, "DMY") | date(indexdate, "DMY")==date(tod, "DMY") 
+
+//exclude enddate prior or same as inde2
+drop if date(indexdate, "DMY")>date("29/03/2021", "DMY") | date(indexdate, "DMY")==date("29/03/2021", "DMY") 
+
+****************************Define T2D cohort***********************************
+*count total participants 
+tab t2d cprd 
+tab t1d cprd 
+
+**1.sensitivity: If a patient has code for t2d and t1d, then replace t1d=0 and t2d=1 
+replace t2d=1 if t2d==1 & t1d==1
+
+*2.keep t2d cohort only i.e. drop if t2d == missing 
+drop if t2d==. 
+*count total population 
+tab t2d cprd 
+
+////////////////////////////////////////////////////////////////////////////////
+****************Supplement: Flowchart start (5-year survival)*******************
+////////////////////////////////////////////////////////////////////////////////
+
+*3.exclude prevalent baseline HF 
+drop if hf_BL==1
+*CPRD Gold and Aurum 
+tab t2d cprd 
+
+*5-year survival time only: drop if indexyear is 2014 
+drop if indexyear>2014
+*check 
+tab t2d cprd 
+*CPRD Gold and Aurum 
+tab indexyear 
+
+*4.exclude CVD (excluding HTN and AF) 
+*ihdb_BL = ischaemic heart disease [with coronary heart disease, myocardial infarction and angina]
+egen excl_CVD= rowtotal (ihdb_BL pvd_BL stroke_BL) 
+tab excl_CVD 
+*CPRD Gold 
+count if excl_CVD==0 & cprd=="gold" 
+*CPRD Aurum 
+count if excl_CVD==0 & cprd=="aurum" 
+*keep if prevalent CVD=0 
+keep if excl_CVD==0 
+*count t2d by cprd gold vs. aurum 
+tab t2d cprd 
+
+*5.count total population (excluding CVD, but NOT HF and AF) 
+tab t2d 
+
+*6.drop participants if glucose-lowering drugs in people without diabetes = coding error?
+tab oral_glucose t2d
+tab insulin t2d 
+*count data (supplement)
+count if (oral_glucose==1 & t2d==0) | (insulin==1 & t2d==0) & (cprd=="gold")
+count if (oral_glucose==1 & t2d==0) | (insulin==1 & t2d==0) & (cprd=="aurum")
+*drop glucose-lowering drugs in people without diabetes - GOLDim
+drop if (oral_glucose==1 & t2d==0) | (insulin==1 & t2d==0) & (cprd=="gold")
+*drop glucose-lowering drugs in people without diabetes - Aurum 
+drop if (oral_glucose==1 & t2d==0) | (insulin==1 & t2d==0) & (cprd=="aurum")
+*check 
+tab oral_glucose t2d 
+tab insulin t2d 
+*count total population (excluding glucose-lowering drugs in people without diabetes only)
+tab t2d cprd 
+
+*.complete case analysis 
+tab t2d cprd 
+*CPRD Gold 
+drop if missing(age) & cprd=="gold" 
+drop if missing(gender) & cprd=="gold" 
+drop if missing(BMI) & cprd=="gold" 
+drop if missing(systolic) & cprd=="gold"
+drop if missing(ethnic) & cprd=="gold"
+drop if missing(imd) & cprd=="gold"
+drop if missing(smokstatus) & cprd=="gold"
+tab t2d cprd 
+
+*CPRD Aurum 
+drop if missing(age) & cprd=="aurum" 
+drop if missing(gender) & cprd=="aurum" 
+drop if missing(BMI) & cprd=="aurum" 
+drop if missing(systolic) & cprd=="aurum" 
+drop if missing(ethnic) & cprd=="aurum" 
+drop if missing(imd) & cprd=="aurum" 
+drop if missing(smokstatus) & cprd=="aurum" 
+tab t2d cprd 
+
+*final cohort 
+tab t2d gender
+tab t2d cprd 
+
+////////////////////////////////////////////////////////////////////////////////
+
+*check dod 0,1 
+replace dod_out=0 if missing(dod_out)
+
+*rates per 1,000 person-years 
+gen pop_hf=tte_hf_out/1000
+gen pop_hfi=tte_hfi_out/1000
+gen pop_hfn=tte_hfn_out/1000
+gen pop_dod=tte_dod_out/1000
+
+*gen indexyear_cut (compare two time periods 2000-2004 vs. 2005-2009)
+gen indexyear_cut="2000-2004" if indexyear==2000 | indexyear==2001 | indexyear==2002 | indexyear==2003 | indexyear==2004 
+replace indexyear_cut="2005-2009" if indexyear==2005 | indexyear==2006 | indexyear==2007 | indexyear==2008 | indexyear==2009 
+tab indexyear_cut 
+sencode indexyear_cut, replace 
+
+*generate sex - male = 2; female = 1
+gen sex = 2 if gender == "male"
+replace sex = 1 if gender == "female"
+tab gender 
+tab sex 
+destring sex, replace 
+
+*age groups for age-stratified  
+gen age_cut="<60" if age<60
+replace age_cut="60-69" if age>59 & age<70 
+replace age_cut="70-79" if age>69 & age<80
+replace age_cut="80≥" if age>79
+tab age_cut 
+sencode age_cut, replace
+
+*IMD variable 
+*imd 1 = most affluent/least deprived 
+*imd 5 = most deprived 
+tab imd 
+gen imd_cut = 1 if imd=="1" 
+replace imd_cut= 5 if imd=="5" 
+tab imd_cut 
+
+*save cohort (5-year survival time)
+save "...\t2d_trends_5years.dta", replace 
+
+///----Main heart failure graphs 
+//--------Ischaemic heart failure 
+use "...\t2d_trends_5years.dta", clear 
+
+//5-year survival 
+drop if indexyear>2014
+
+//--------Ischaemic heart failure 
+stset tte_hfi_out, id(patid) exit(time 5) failure(hfi_out==1)
+replace _t = _t/1000			
+gen out = _d 
+
+*jj = t2d (1 = t2d; 0 = without diabetes)
+*continous data = c. for interactions 
+foreach t2d in 0 1 {															
+	preserve  									
+	poisson out age indexyear##sex if t2d == `t2d', exposure(_t) irr vce(robust) 	
+	margins indexyear#sex if t2d == `t2d', predict(ir) at(age=60) post
+	parmest, fast
+	gen t2d = `t2d'
+	tempfile t2d_`t2d'
+	save `t2d_`t2d'', replace
+	restore
+}
+
+*graph
+use `t2d_0', clear
+append using `t2d_1'
+split parm, p(.)
+rename parm1 year 
+destring year, replace 
+split parm2, p(#)
+rename parm22 sex
+destring sex, replace 
+gen type = "ischaemic_5y"
+save "...\ischaemic_5y", replace 
+
+//--------Non-ischaemic heart failure 
+use "...\t2d_trends_5years.dta", clear 
+
+//5-year survival 
+drop if indexyear>2014
+
+//run model 
+stset tte_hfn_out, id(patid) exit(time 5) failure(hfn_out==1)
+replace _t = _t/1000	
+gen out =_d 		
+
+foreach t2d in 0 1 {															
+	preserve  									
+	poisson out age indexyear##sex if t2d == `t2d', exposure(_t) irr vce(robust) 	
+	margins indexyear#sex if t2d == `t2d', predict(ir) at(age=60) post
+	parmest, fast
+	gen t2d = `t2d'
+	tempfile t2d_`t2d'
+	save `t2d_`t2d'', replace
+	restore
+}
+
+*graph
+use `t2d_0', clear
+append using `t2d_1'
+split parm, p(.)
+rename parm1 year 
+destring year, replace 
+split parm2, p(#)
+rename parm22 sex
+destring sex, replace 
+gen type = "nischaemic_5y"
+save "...\nischaemic_5y", replace 
+
+// Load data
+use "...\overall_t2d_trends", clear 
+
+// 10-year survival 
+drop if indexyear > 2009
+
+//--------Ischaemic heart failure 
+stset tte_hfi_out, id(patid) exit(time 10) failure(hfi_out==1)
+replace _t = _t/1000			
+gen out = _d 
+
+// jj = t2d (1 = t2d; 0 = without diabetes)
+foreach t2d in 0 1 {															
+	preserve  									
+	poisson out age indexyear##sex if t2d == `t2d', exposure(_t) irr vce(robust) 	
+	margins indexyear#sex if t2d == `t2d', predict(ir) at(age=60) post
+	parmest, fast
+	gen t2d = `t2d'
+	tempfile t2d_`t2d'
+	save `t2d_`t2d'', replace
+	restore
+}
+
+// Graph
+use `t2d_0', clear
+append using `t2d_1'
+split parm, p(.)
+rename parm1 year 
+destring year, replace 
+split parm2, p(#)
+rename parm22 sex
+destring sex, replace 
+gen type = "ischaemic_main"
+save "...\ischaemic_main", replace
+
+//--------Non-ischaemic heart failure 
+use "...\overall_t2d_trends", clear 
+
+// 10-year survival 
+drop if indexyear > 2009
+
+// Run model 
+stset tte_hfn_out, id(patid) exit(time 10) failure(hfn_out==1)
+replace _t = _t/1000	
+gen out = _d 		
+
+// t2d = 1 = t2d; 0 = without diabetes 
+foreach t2d in 0 1 {															
+	preserve  									
+	poisson out age indexyear##sex if t2d == `t2d', exposure(_t) irr vce(robust) 	
+	margins indexyear#sex if t2d == `t2d', predict(ir) at(age=60) post
+	parmest, fast
+	gen t2d = `t2d'
+	tempfile t2d_`t2d'
+	save `t2d_`t2d'', replace
+	restore
+}
+
+// Graph
+use `t2d_0', clear
+append using `t2d_1'
+split parm, p(.)
+rename parm1 year 
+destring year, replace 
+split parm2, p(#)
+rename parm22 sex
+destring sex, replace 
+gen type = "nischaemic_main"
+save "...\nischaemic_main", replace
+
+**append datasets 
+use "...\nischaemic_5y", clear 
+append using "...\ischaemic_5y", force 
+append using "...\ischaemic_main", force 
+append using "...\nischaemic_main", force 
+
+* Ischaemic HF graph for men (sex==2) (5-year survival)
+twoway (connected estimate year if t2d == 1 & sex == 2 & type == "ischaemic_5y", sort mcolor(red) lcolor(red) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 2 & type == "ischaemic_5y", sort lcolor(red) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & sex == 2 & type == "ischaemic_5y", sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 2 & type == "ischaemic_5y", sort lcolor(blue) lwidth(thin)) ///
+       (connected estimate year if t2d == 1 & sex == 2 & type == "ischaemic_main", sort mcolor(red) lcolor(red) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 2 & type == "ischaemic_main", sort lcolor(red) lwidth(thin) lpattern(dash)) ///
+       (connected estimate year if t2d == 0 & sex == 2 & type == "ischaemic_main", sort mcolor(blue) lcolor(blue) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 2 & type == "ischaemic_main", sort lcolor(blue) lwidth(thin) lpattern(dash)), ///
+       ytitle("Age-standardised rate" "(per 1,000 person-years)", size(huge)) ///
+       ylabel(0.1 0.5 1 2 3 4, labsize(huge)) ///
+       xtitle(" ", size(large)) ///
+       title("A. Ischaemic heart failure", size(huge) pos(11)) ///
+       xlabel(2000(1)2014, nolabels) ///
+       legend(order(1 "Men with T2D" 3 "Men without diabetes") region(fcolor(none)) position(1) ring(0)) ///
+       legend(size(huge)) ///
+       xsize(5) ///
+       ysize(4) ///
+       yscale(log) ///
+       name(male_i5, replace)
+
+* Ischaemic HF graph for women (sex==1) (5-year survival)
+twoway (connected estimate year if t2d == 1 & sex == 1 & type == "ischaemic_5y", sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 1 & type == "ischaemic_5y", sort lcolor(orange) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & sex == 1 & type == "ischaemic_5y", sort mcolor(green) lcolor(green) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 1 & type == "ischaemic_5y", sort lcolor(green) lwidth(thin)) ///
+       (connected estimate year if t2d == 1 & sex == 1 & type == "ischaemic_main", sort mcolor(orange) lcolor(orange) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 1 & type == "ischaemic_main", sort lcolor(orange) lwidth(thin) lpattern(dash)) ///
+       (connected estimate year if t2d == 0 & sex == 1 & type == "ischaemic_main", sort mcolor(green) lcolor(green) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 1 & type == "ischaemic_main", sort lcolor(green) lwidth(thin) lpattern(dash)), ///
+       ytitle(" ", size(large)) ///
+       ylabel(0.1 0.5 1 2 3 4, labsize(huge)) ///
+       xtitle(" ", size(large)) ///
+       title(" ", size(vhuge) pos(11)) ///
+       xlabel(2000(1)2014, nolabels) ///
+       legend(order(1 "Women with T2D" 3 "Women without diabetes") region(fcolor(none)) position(1) ring(0)) ///
+       legend(size(huge)) ///
+       xsize(5) ///
+       ysize(4) ///
+       yscale(log) ///
+       name(female_i5, replace)
+
+* Non-ischaemic HF graph for men (sex==2) (5-year survival)
+twoway (connected estimate year if t2d == 1 & sex == 2 & type == "nischaemic_5y", sort mcolor(red) lcolor(red) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 2 & type == "nischaemic_5y", sort lcolor(red) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & sex == 2 & type == "nischaemic_5y", sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 2 & type == "nischaemic_5y", sort lcolor(blue) lwidth(thin)) ///
+       (connected estimate year if t2d == 1 & sex == 2 & type == "nischaemic_main", sort mcolor(red) lcolor(red) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 2 & type == "nischaemic_main", sort lcolor(red) lwidth(thin) lpattern(dash)) ///
+       (connected estimate year if t2d == 0 & sex == 2 & type == "nischaemic_main", sort mcolor(blue) lcolor(blue) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 2 & type == "nischaemic_main", sort lcolor(blue) lwidth(thin) lpattern(dash)), ///
+       ytitle("Age-standardised rate" "(per 1,000 person-years)", size(huge)) ///
+       ylabel(0.1 0.5 1 2 3 4, labsize(huge)) ///
+       xtitle("Years", size(huge)) ///
+       title("B. Non-ischaemic heart failure", size(huge) pos(11)) ///
+       xlabel(2000(1)2014, labsize(huge) angle(45)) ///
+       legend(off) ///
+       xsize(5) ///
+       ysize(4) ///
+       yscale(log) ///
+       name(male_ni5, replace)
+
+* Non-ischaemic HF graph for women (sex==1) (5-year survival)
+twoway (connected estimate year if t2d == 1 & sex == 1 & type == "nischaemic_5y", sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 1 & type == "nischaemic_5y", sort lcolor(orange) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & sex == 1 & type == "nischaemic_5y", sort mcolor(green) lcolor(green) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 1 & type == "nischaemic_5y", sort lcolor(green) lwidth(thin)) ///
+       (connected estimate year if t2d == 1 & sex == 1 & type == "nischaemic_main", sort mcolor(orange) lcolor(orange) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 1 & type == "nischaemic_main", sort lcolor(orange) lwidth(thin) lpattern(dash)) ///
+       (connected estimate year if t2d == 0 & sex == 1 & type == "nischaemic_main", sort mcolor(green) lcolor(green) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 1 & type == "nischaemic_main", sort lcolor(green) lwidth(thin) lpattern(dash)), ///
+       ytitle(" ", size(large)) ///
+       ylabel(0.1 0.5 1 2 3 4, labsize(huge)) ///
+       xtitle("Years", size(huge)) ///
+       title(" ", size(vhuge) pos(11)) ///
+       xlabel(2000(1)2014, labsize(huge) angle(45)) ///
+       legend(off) ///
+       xsize(5) ///
+       ysize(4) ///
+       yscale(log) ///
+       name(female_ni5, replace)
+	   
+// Graph save 
+graph combine male_i5 female_i5 male_ni5 female_ni5, cols(2) rows(2) iscale(*0.5) xsize(4) ysize(2) ycommon name(sex_5y, replace)
+graph save "sex_5y" "...\sex_5y.gph", replace 
+graph export "...\sex_5y.jpg", replace as(jpg) name("sex_5y") width(5000) height(3000) quality(100)
+
+////////////////////////////////////////////////////////////////////////////////
+*Sensitivity1: define heart failure using hospital and death data 
+////////////////////////////////////////////////////////////////////////////////
+**********Prepare CPRD GOLD and Aurum cohort 
+*Prepare Gold data 
+use "...\gold_cohort1.dta", clear 
+append using "...\aurum_cohort1.dta", force
+
+*clean data: 
+*Obesity (using test file)
+*obesity = medcodeid (clinical files)
+replace Obesity=0 if Obesity==. 
+count if missing(Obesity)
+
+*clean data: 
+*CKD (using test file)
+*ckd = medcodeid (clinical file)
+replace CKD=0 if CKD==.
+count if missing(CKD)
+
+*inclusion criterion check: drop if <18 age 
+gen index = date(indexdate, "DMY")
+format index %td
+gen indexyear = yofd(index)
+destring yob, replace 
+gen age = indexyear - yob 
+drop if age<18 
+
+*inclusion criterion check: keep if gender is  or male only 
+keep if gender=="female" | gender=="male" 
+tab gender 
+
+********************************************************************************
+*Survival Definition1: Time to event (HF in HES, ONS)
+
+*count population 
+tab t2d
+
+*prepare data: convert days to years
+replace tt_dod=tt_dod/365
+replace tt_end=tt_end/365 
+replace tt_linkdate=tt_linkdate/365
+replace tt_lcd=tt_lcd/365
+replace tt_tod=tt_tod/365 
+foreach ot in hf ihdb {
+replace tt_`ot'_dod=tt_`ot'_dod/365 
+replace tt_`ot'_outh=tt_`ot'_outh/365
+replace tt_`ot'_outc=tt_`ot'_outc/365
+}
+
+******Death survival time (ONS OR HES)
+*Create dod_out binary variable (censored)
+egen tte_dod_out = rowmin(tt_dod tt_end tt_linkdate) 
+gen dod_out=1 if tte_dod_out==tt_dod
+replace dod_out=0 if missing(dod_out)
+
+******HF & other CVD survival time (ONS OR HES)
+*1.HES HF or death by HF (new definition of incident HF = HF in HES or death or CPRD) 
+foreach ot in hf ihdb {
+egen tt_`ot'_out = rowmin(tt_`ot'_outh tt_`ot'_dod) 
+gen `ot'_out=0 if missing(tt_`ot'_out)
+replace `ot'_out=1 if missing(hf_out) 
+}
+
+*2.generate row minimum variable (HES, date of death, linkdate, end) 
+foreach ot in hf ihdb {
+egen tte_`ot'_out = rowmin(tt_`ot'_out tt_dod tt_end tt_linkdate)
+}
+
+*3.censor data: relabel variable = 0 if time to event is NOT time to HF 
+foreach ot in hf ihdb {
+replace `ot'_out=0 if tte_`ot'_out!=tt_`ot'_out
+replace `ot'_out=1 if tte_`ot'_out==tt_`ot'_out
+}
+
+******Ischaemic vs. Non-ischaemic HF survival time (ONS OR HES)
+
+*1.define ischaemic-HF time to event variable 
+*if hf_out =1 & ihdb_out =1 
+gen tte_hfi_out= tte_hf_out if (tte_hf_out==tte_ihdb_out & hf_out==1 & ihdb_out==1) | (tte_ihdb_out < tte_hf_out & hf_out==1 & ihdb_out==1) 
+*replace remaining with censoring lod, lcd, tod, linkdate, dod
+egen hf_cens = rowmin(tt_dod tt_end tt_linkdate)  
+replace tte_hfi_out = hf_cens if missing(tte_hfi_out)
+*indicator variable 
+gen hfi_out =1 if (tte_hf_out==tte_ihdb_out & hf_out==1 & ihdb_out==1) | (tte_ihdb_out < tte_hf_out & hf_out==1 & ihdb_out==1) 
+replace hfi_out=0 if missing(hfi_out)
+
+*2.define non-ischaemic HF time to event variable 
+*defined by developing HF (without prior ischaemic heart disease)
+*HF and developing ihdb after 
+gen tte_hfn_out= tte_hf_out if (tte_hf_out==tte_ihdb_out & hf_out==1 & ihdb_out==0) | (tte_ihdb_out < tte_hf_out & hf_out==1 & ihdb_out==0) | (tte_hf_out < tte_ihdb_out & hf_out==1 & ihdb_out==1) | (tte_hf_out < tte_ihdb_out & hf_out==1 & ihdb_out==0)
+*replace with censored data if ischaemic-HF 
+replace tte_hfn_out = hf_cens if missing(tte_hfn_out) 
+*indicator variable 
+gen hfn_out =1 if (tte_hf_out==tte_ihdb_out & hf_out==1 & ihdb_out==0) | (tte_ihdb_out < tte_hf_out & hf_out==1 & ihdb_out==0) | (tte_hf_out < tte_ihdb_out & hf_out==1 & ihdb_out==1) | (tte_hf_out < tte_ihdb_out & hf_out==1 & ihdb_out==0)
+replace hfn_out=0 if missing(hfn_out)
+
+*check 
+tab hf_out 
+tab hfi_out 
+tab hfn_out 
+
+*4. Create indicator variable 
+gen hf_type="ischaemic HF" if hfi_out==1 
+replace hf_type="non-ischaemic HF" if hfn_out==1 
+
+********Exclude if negative(-) time to event i.e. if last linkage date in HES, linkage date in ONS OR date of death is PRIOR to index date  
+
+//exclude dod prior or same as index 
+drop if date(indexdate, "DMY")>date(dod, "DMY") | date(indexdate, "DMY")==date(dod, "DMY") 
+
+//exclude linkdate prior or same as index 
+drop if date(indexdate, "DMY")>date(linkdate, "DMY") | date(indexdate, "DMY")==date(linkdate, "DMY")
+
+//exclude enddate prior or same as index 
+drop if date(indexdate, "DMY")>date("29/03/2021", "DMY") | date(indexdate, "DMY")==date("29/03/2021", "DMY") 
+
+******************************Define T2D cohort*********************************
+
+*count total participants 
+tab t2d cprd 
+tab t1d cprd 
+
+**1.sensitivity: If a patient has code for t2d and t1d, then replace t1d=0 and t2d=1 
+replace t2d=1 if t2d==1 & t1d==1
+
+*2.keep t2d cohort only i.e. drop if t2d == missing 
+drop if t2d==. 
+*count total population 
+tab t2d cprd 
+
+*3.exclude prevalent baseline HF 
+drop if hf_BL==1
+*CPRD Gold 
+tab t2d cprd 
+
+*4.exclude CVD (excluding HTN and AF) 
+egen excl_CVD= rowtotal (pvd_BL ihdb_BL stroke_BL) 
+tab excl_CVD 
+*CPRD Gold 
+count if excl_CVD==0 & cprd=="gold" 
+*CPRD Aurum 
+count if excl_CVD==0 & cprd=="aurum" 
+*keep if prevalent CVD=0 
+keep if excl_CVD==0 
+*count t2d by cprd gold vs. aurum 
+tab t2d cprd 
+
+*5.count total population (excluding CVD, but NOT HF and AF) 
+tab t2d 
+
+*6.individuals with nonmissing data on age, sex, BMI, SBP, ethnicity, deprivation, smoking 
+misstable summarize 
+
+*7.drop participants if glucose-lowering drugs in people without diabetes = coding error?
+tab oral_glucose t2d
+tab insulin t2d 
+*drop glucose-lowering drugs in people without diabetes - GOLD 
+drop if (oral_glucose==1 & t2d==0) | (insulin==1 & t2d==0) & (cprd=="gold")
+*drop glucose-lowering drugs in people without diabetes - Aurum 
+drop if (oral_glucose==1 & t2d==0) | (insulin==1 & t2d==0) & (cprd=="aurum")
+*count total population (excluding glucose-lowering drugs in people without diabetes only)
+tab t2d cprd 
+
+*8.complete case analysis 
+tab t2d cprd 
+*CPRD Gold 
+drop if missing(age) & cprd=="gold" 
+drop if missing(gender) & cprd=="gold" 
+drop if missing(BMI) & cprd=="gold" 
+drop if missing(systolic) & cprd=="gold"
+drop if missing(ethnic) & cprd=="gold"
+drop if missing(imd) & cprd=="gold"
+drop if missing(smokstatus) & cprd=="gold"
+tab t2d cprd 
+
+*CPRD Aurum 
+drop if missing(age) & cprd=="aurum" 
+drop if missing(gender) & cprd=="aurum" 
+drop if missing(BMI) & cprd=="aurum" 
+drop if missing(systolic) & cprd=="aurum" 
+drop if missing(ethnic) & cprd=="aurum" 
+drop if missing(imd) & cprd=="aurum" 
+drop if missing(smokstatus) & cprd=="aurum" 
+tab t2d cprd 
+
+*9.count population after complete case inclusion applied 
+tab t2d 
+tab t2d cprd 
+
+*check dataset is without oralglucose and insulin in control 
+tab t2d oral_glucose 
+tab t2d insulin 
+
+*check dod 0,1 
+replace dod_out=0 if missing(dod_out)
+
+*rates per 1,000 person-years 
+gen pop_hf=tte_hf_out/1000
+gen pop_hfi=tte_hfi_out/1000
+gen pop_hfn=tte_hfn_out/1000
+gen pop_dod=tte_dod_out/1000
+
+*gen indexyear_cut (compare two time periods 2000-2004 vs. 2005-2009)
+gen indexyear_cut="2000-2004" if indexyear==2000 | indexyear==2001 | indexyear==2002 | indexyear==2003 | indexyear==2004 
+replace indexyear_cut="2005-2009" if indexyear==2005 | indexyear==2006 | indexyear==2007 | indexyear==2008 | indexyear==2009 
+tab indexyear_cut 
+sencode indexyear_cut, replace 
+
+*generate sex - male = 2; female = 1
+gen sex = 2 if gender == "male"
+replace sex = 1 if gender == "female"
+tab gender 
+tab sex 
+destring sex, replace 
+
+*age groups for age-stratified  
+gen age_cut="<60" if age<60
+replace age_cut="60-69" if age>59 & age<70 
+replace age_cut="70-79" if age>69 & age<80
+replace age_cut="80≥" if age>79
+tab age_cut 
+sencode age_cut, replace
+
+*IMD variable 
+*imd 1 = most affluent/least deprived 
+*imd 5 = most deprived 
+tab imd 
+gen imd_cut = 1 if imd=="1" 
+replace imd_cut= 5 if imd=="5" 
+tab imd_cut 
+
+*format data 
+sencode ethnic, replace 
+sencode alcstatus, replace 
+sencode smokstatus_cut, replace 
+destring imd, replace 
+
+*save dataset - trends 
+save "...\t2d_trends_s1.dta", replace 
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+*Supplement: Sex-stratified trends for ischaemic and non-ischaemic HF in people with and without type 2 diabetes (HES AND ONS)
+*10-year survival 
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+*load data 
+use "...\t2d_trends_s1.dta", clear 
+
+//10-year survival 
+drop if indexyear>2009
+
+//--------Ischaemic heart failure 
+stset tte_hfi_out, id(patid) exit(time 10) failure(hfi_out==1)
+replace _t = _t/1000			
+gen out = _d 
+
+*jj = t2d (1 = t2d; 0 = without diabetes)
+foreach t2d in 0 1 {															
+	preserve  									
+	poisson out age indexyear##sex if t2d == `t2d', exposure(_t) irr vce(robust) 	
+	margins indexyear#sex if t2d == `t2d', predict(ir) at(age=60) post
+	parmest, fast
+	gen t2d = `t2d'
+	tempfile t2d_`t2d'
+	save `t2d_`t2d'', replace
+	restore
+}
+
+*graph
+use `t2d_0', clear
+append using `t2d_1'
+split parm, p(.)
+rename parm1 year 
+destring year, replace 
+split parm2, p(#)
+rename parm22 sex
+destring sex, replace 
+gen type = "ischaemic_s1"
+save "...\ischaemic_s1", replace
+
+//--------Non-ischaemic heart failure 
+use "...\t2d_trends_s1.dta", clear 
+
+*10-year survival 
+drop if indexyear>2009
+
+//run model 
+stset tte_hfn_out, id(patid) exit(time 10) failure(hfn_out==1)
+replace _t = _t/1000	
+gen out =_d 		
+
+*t2d= 1 = t2d; 0  = without diabetes 
+foreach t2d in 0 1 {															
+	preserve  									
+	poisson out age indexyear##sex if t2d == `t2d', exposure(_t) irr vce(robust) 	
+	margins indexyear#sex if t2d == `t2d', predict(ir) at(age=60) post
+	parmest, fast
+	gen t2d = `t2d'
+	tempfile t2d_`t2d'
+	save `t2d_`t2d'', replace
+	restore
+}
+
+*graph
+use `t2d_0', clear
+append using `t2d_1'
+split parm, p(.)
+rename parm1 year 
+destring year, replace 
+split parm2, p(#)
+rename parm22 sex
+destring sex, replace 
+gen type = "nischaemic_s1"
+save "...\nischaemic_s1", replace
+
+**append together 
+use "...\ischaemic_s1", clear 
+append using "...\nischaemic_s1", force 
+append using "...\ischaemic_main", force 
+append using "...\nischaemic_main", force 
+
+* Ischaemic graph for men (sex==2) (10-year survival)
+twoway (connected estimate year if t2d == 1 & sex == 2 & type=="ischaemic_s1", sort mcolor(red) lcolor(red) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 2 & type=="ischaemic_s1", sort lcolor(red) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & sex == 2 & type=="ischaemic_s1", sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 2 & type=="ischaemic_s1", sort lcolor(blue) lwidth(thin)) ///
+       (connected estimate year if t2d == 1 & sex == 2 & type=="ischaemic_main", sort mcolor(red) lcolor(red) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 2 & type=="ischaemic_main", sort lcolor(red) lwidth(thin) lpattern(dash)) ///
+       (connected estimate year if t2d == 0 & sex == 2 & type=="ischaemic_main", sort mcolor(blue) lcolor(blue) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 2 & type=="ischaemic_main", sort lcolor(blue) lwidth(thin) lpattern(dash)), ///
+       ytitle("Age-standardised rate" "(per 1,000 person-years)", size(huge)) ///
+       ylabel(0.1 0.5 1 2 3 4, labsize(huge)) ///
+       xtitle("  ", size(large)) ///
+       title("A. Ischaemic heart failure", size(huge) pos(11)) ///
+       xlabel(2000(1)2009, nolabels) ///
+       legend(order(1 "Men with T2D" 3 "Men without diabetes") region(fcolor(none)) position(1) ring(0)) ///
+       legend(size(vlarge)) ///
+       xsize(5) ///
+       ysize(4) ///
+       yscale(log) ///
+       name(male_i10s1, replace)
+	   
+* Ischaemic graph for women (sex==1) (10-year survival)
+twoway (connected estimate year if t2d == 1 & sex == 1 & type=="ischaemic_s1", sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 1 & type=="ischaemic_s1", sort lcolor(orange) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & sex == 1 & type=="ischaemic_s1", sort mcolor(green) lcolor(green) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 1 & type=="ischaemic_s1", sort lcolor(green) lwidth(thin)) ///
+	   (connected estimate year if t2d == 1 & sex == 1 & type=="ischaemic_main", sort mcolor(orange) lcolor(orange) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 1 & type=="ischaemic_main", sort lcolor(orange) lwidth(thin) lpattern(dash)) ///
+       (connected estimate year if t2d == 0 & sex == 1 & type=="ischaemic_main", sort mcolor(green) lcolor(green) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 1 & type=="ischaemic_main", sort lcolor(green) lwidth(thin) lpattern(dash)), ///
+       ytitle("  ", size(large)) ///
+       ylabel(0.1 0.5 1 2 3 4, labsize(huge)) ///
+       xtitle("  ", size(large)) ///
+       title("  ", size(vhuge) pos(11))  ///
+       xlabel(2000(1)2009, nolabels) ///
+       legend(order(1 "Women with T2D" 3 "Women without diabetes") region(fcolor(none)) position(1) ring(0)) ///
+       legend(size(vlarge)) ///
+       xsize(5) ///
+       ysize(4) ///
+       yscale(log) ///
+       name(female_i10s1, replace)
+	 
+* Non-ischaemic graph for men (sex==2) (10-year survival)
+twoway (connected estimate year if t2d == 1 & sex == 2 & type=="nischaemic_s1", sort mcolor(red) lcolor(red) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 2 & type=="nischaemic_s1", sort lcolor(red) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & sex == 2 & type=="nischaemic_s1", sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 2 & type=="nischaemic_s1", sort lcolor(blue) lwidth(thin)) ///
+       (connected estimate year if t2d == 1 & sex == 2 & type=="nischaemic_main", sort mcolor(red) lcolor(red) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 2 & type=="nischaemic_main", sort lcolor(red) lwidth(thin) lpattern(dash)) ///
+       (connected estimate year if t2d == 0 & sex == 2 & type=="nischaemic_main", sort mcolor(blue) lcolor(blue) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 2 & type=="nischaemic_main", sort lcolor(blue) lwidth(thin) lpattern(dash)), ///
+       ytitle("Age-standardised rate" "(per 1,000 person-years)", size(huge)) ///
+       ylabel(0.1 0.5 1 2 3 4, labsize(huge)) ///
+       xtitle("Years", size(huge)) ///
+       title("B. Non-ischaemic heart failure", size(huge) pos(11)) ///
+       xlabel(2000(1)2009, labsize(huge) angle(45)) ///
+       legend(off) ///
+       xsize(5) ///
+       ysize(4) ///
+       yscale(log) ///
+       name(male_ni10s1, replace)
+	   
+* Non-ischaemic graph for women (sex==1) (10-year survival)
+twoway (connected estimate year if t2d == 1 & sex == 1 & type=="nischaemic_s1", sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 1 & type=="nischaemic_s1", sort lcolor(orange) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & sex == 1 & type=="nischaemic_s1", sort mcolor(green) lcolor(green) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 1 & type=="nischaemic_s1", sort lcolor(green) lwidth(thin)) ///
+	   (connected estimate year if t2d == 1 & sex == 1 & type=="nischaemic_main", sort mcolor(orange) lcolor(orange) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 1 & type=="nischaemic_main", sort lcolor(orange) lwidth(thin) lpattern(dash)) ///
+       (connected estimate year if t2d == 0 & sex == 1 & type=="nischaemic_main", sort mcolor(green) lcolor(green) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 1 & type=="nischaemic_main", sort lcolor(green) lwidth(thin) lpattern(dash)), ///
+       ytitle("  ", size(large)) ///
+       ylabel(0.1 0.5 1 2 3 4, labsize(huge)) ///
+       xtitle("Years", size(huge)) ///
+       title("  ", size(vhuge) pos(11))  ///
+       xlabel(2000(1)2009, labsize(huge) angle(45)) ///
+       legend(off) ///
+       xsize(5) ///
+       ysize(4) ///
+       yscale(log) ///
+       name(female_ni10s1, replace)
+	   
+*graph save  
+graph combine male_i10s1 female_i10s1 male_ni10s1 female_ni10s1, cols(2) rows(2) iscale(*0.5) ycommon name(sex_10y_s1, replace)
+graph save "sex_10y_s1" "...\sex_10y_s1.gph", replace 
+graph export "...\sex_10y_s1.jpg", replace as(jpg) name("sex_10y_s1") width(8000) height(5000) quality(100) 
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+*Sensitivity2: Different definition of ischaemic-HF (baseline study including prevalence IHD [coronary heart disease, angina, mi])
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+*load data 
+use "...\gold_cohort1.dta", clear 
+append using "...\aurum_cohort1.dta", force
+
+*clean data: 
+*Obesity (using test file)
+*obesity = medcodeid (clinical files)
+replace Obesity=0 if Obesity==. 
+count if missing(Obesity)
+
+*clean data: 
+*CKD (using test file)
+*ckd = medcodeid (clinical file)
+replace CKD=0 if CKD==.
+count if missing(CKD)
+
+*inclusion criterion check: drop if <18 age 
+gen index = date(indexdate, "DMY")
+format index %td
+gen indexyear = yofd(index)
+destring yob, replace 
+gen age = indexyear - yob 
+drop if age<18 
+
+*inclusion criterion check: keep if gender is  or male only 
+keep if gender=="female" | gender=="male" 
+tab gender 
+
+*count population 
+tab t2d
+
+*prepare data: convert days to years
+replace tt_dod=tt_dod/365
+replace tt_end=tt_end/365 
+replace tt_linkdate=tt_linkdate/365
+replace tt_lcd=tt_lcd/365
+replace tt_tod=tt_tod/365 
+foreach ot in hf ihdb {
+replace tt_`ot'_dod=tt_`ot'_dod/365 
+replace tt_`ot'_outh=tt_`ot'_outh/365
+replace tt_`ot'_outc=tt_`ot'_outc/365
+}
+
+******Death survival time (ONS OR HES OR CPRD) 
+egen tte_dod_out = rowmin(tt_dod tt_end tt_linkdate tt_tod tt_lcd) 
+*Create dod_out binary variable (censored)
+gen dod_out=1 if tte_dod_out==tt_dod
+replace dod_out=0 if missing(dod_out)
+
+******HF & other CVD survival time (ONS OR HES OR CPRD)
+*1.HES HF or death by HF (new definition of incident HF = HF in HES or death or CPRD) 
+foreach ot in hf ihdb {
+egen tt_`ot'_out = rowmin(tt_`ot'_outh tt_`ot'_dod tt_`ot'_outc) 
+gen `ot'_out=0 if missing(tt_`ot'_out)
+replace `ot'_out=1 if missing(hf_out) 
+}
+
+*2.generate row minimum variable (HES, date of death, linkdate, lcd, tod, end) 
+foreach ot in hf ihdb {
+egen tte_`ot'_out = rowmin(tt_`ot'_out tt_dod tt_end tt_linkdate tt_tod tt_lcd)
+}
+
+*3.censor data: relabel variable = 0 if time to event is NOT time to HF 
+foreach ot in hf ihdb {
+replace `ot'_out=0 if tte_`ot'_out!=tt_`ot'_out
+replace `ot'_out=1 if tte_`ot'_out==tt_`ot'_out
+}
+
+******Ischaemic vs. Non-ischaemic HF survival time (ONS OR HES OR CPRD)
+
+*1.define ischaemic-HF time to event variable 
+*if hf_out =1 & ihdb_out =1 
+gen tte_hfi_out= tte_hf_out if (tte_hf_out==tte_ihdb_out & hf_out==1 & ihdb_out==1) | (tte_ihdb_out < tte_hf_out & hf_out==1 & ihdb_out==1)| (ihdb_BL==1 & hf_out==1) 
+*replace remaining with censoring lod, lcd, tod, linkdate, dod
+egen hf_cens = rowmin(tt_dod tt_end tt_linkdate tt_tod tt_lcd)  
+replace tte_hfi_out = hf_cens if missing(tte_hfi_out)
+*indicator variable 
+gen hfi_out =1 if (tte_hf_out==tte_ihdb_out & hf_out==1 & ihdb_out==1) | (tte_ihdb_out < tte_hf_out & hf_out==1 & ihdb_out==1) | (ihdb_BL==1 & hf_out==1) 
+replace hfi_out=0 if missing(hfi_out)
+
+*2.define non-ischaemic HF time to event variable 
+*defined by developing HF (without prior ischaemic heart disease)
+*HF and developing IHD after 
+gen tte_hfn_out= tte_hf_out if (tte_hf_out==tte_ihdb_out & hf_out==1 & ihdb_out==0 & ihdb_BL==0) | (tte_ihdb_out < tte_hf_out & hf_out==1 & ihdb_out==0 & ihdb_BL==0) | (tte_hf_out < tte_ihdb_out & hf_out==1 & ihdb_out==1 & ihdb_BL==0) | (tte_hf_out < tte_ihdb_out & hf_out==1 & ihdb_out==0 & ihdb_BL==0)
+*replace with censored data if ischaemic-HF 
+replace tte_hfn_out = hf_cens if missing(tte_hfn_out) 
+*indicator variable 
+gen hfn_out =1 if (tte_hf_out==tte_ihdb_out & hf_out==1 & ihdb_out==0 & ihdb_BL==0) | (tte_ihdb_out < tte_hf_out & hf_out==1 & ihdb_out==0 & ihdb_BL==0) | (tte_hf_out < tte_ihdb_out & hf_out==1 & ihdb_out==1 & ihdb_BL==0) | (tte_hf_out < tte_ihdb_out & hf_out==1 & ihdb_out==0 & ihdb_BL==0)
+replace hfn_out=0 if missing(hfn_out)
+
+*check 
+tab hf_out 
+tab hfi_out 
+tab hfn_out 
+
+*4. Create indicator variable 
+gen hf_type="ischaemic HF" if hfi_out==1 
+replace hf_type="non-ischaemic HF" if hfn_out==1 
+
+********Exclude if negative(-) time to event i.e. if last linkage date in HES, linkage date in ONS OR date of death is PRIOR to index date  
+
+//exclude dod prior or same as index 
+drop if date(indexdate, "DMY")>date(dod, "DMY") | date(indexdate, "DMY")==date(dod, "DMY") 
+
+//exclude linkdate prior or same as index 
+drop if date(indexdate, "DMY")>date(linkdate, "DMY") | date(indexdate, "DMY")==date(linkdate, "DMY")
+
+//exclude lcd prior or same as index 
+drop if date(indexdate, "DMY")>date(lcd, "DMY") | date(indexdate, "DMY")==date(lcd, "DMY") 
+
+//exclude tod prior or same as index 
+drop if date(indexdate, "DMY")>date(tod, "DMY") | date(indexdate, "DMY")==date(tod, "DMY") 
+
+//exclude enddate prior or same as inde2
+drop if date(indexdate, "DMY")>date("29/03/2021", "DMY") | date(indexdate, "DMY")==date("29/03/2021", "DMY") 
+
+***********************Define T2D cohort***************************
+*count total participants 
+tab t2d cprd 
+tab t1d cprd 
+
+**1.sensitivity: If a patient has code for t2d and t1d, then replace t1d=0 and t2d=1 
+replace t2d=1 if t2d==1 & t1d==1
+
+*2.keep t2d cohort only i.e. drop if t2d == missing 
+drop if t2d==. 
+*count total population 
+tab t2d cprd 
+
+*3.exclude prevalent baseline HF 
+drop if hf_BL==1
+*CPRD Gold 
+tab t2d cprd 
+
+*4.exclude CVD (without pvd and stroke ONLY, including IHD [angina, mi and coronary heart disease] at baseline)
+egen excl_CVD= rowtotal (pvd_BL stroke_BL) 
+tab excl_CVD 
+*CPRD Gold 
+count if excl_CVD==0 & cprd=="gold" 
+*CPRD Aurum 
+count if excl_CVD==0 & cprd=="aurum" 
+*keep if prevalent CVD=0 
+keep if excl_CVD==0 
+*count t2d by cprd gold vs. aurum 
+tab t2d cprd 
+
+*5.count total population (excluding CVD, but NOT HF and AF) 
+tab t2d 
+
+*6.individuals with nonmissing data on age, sex, BMI, SBP, ethnicity, deprivation, smoking 
+misstable summarize 
+
+*7.drop participants if glucose-lowering drugs in people without diabetes = coding error?
+tab oral_glucose t2d
+tab insulin t2d 
+*drop glucose-lowering drugs in people without diabetes - GOLD 
+drop if (oral_glucose==1 & t2d==0) | (insulin==1 & t2d==0) & (cprd=="gold")
+*drop glucose-lowering drugs in people without diabetes - Aurum 
+drop if (oral_glucose==1 & t2d==0) | (insulin==1 & t2d==0) & (cprd=="aurum")
+*count total population (excluding glucose-lowering drugs in people without diabetes only)
+tab t2d cprd 
+
+*8.complete case analysis 
+tab t2d cprd 
+*CPRD Gold 
+drop if missing(age) & cprd=="gold" 
+drop if missing(gender) & cprd=="gold" 
+drop if missing(BMI) & cprd=="gold" 
+drop if missing(systolic) & cprd=="gold"
+drop if missing(ethnic) & cprd=="gold"
+drop if missing(imd) & cprd=="gold"
+drop if missing(smokstatus) & cprd=="gold"
+tab t2d cprd 
+
+*CPRD Aurum 
+drop if missing(age) & cprd=="aurum" 
+drop if missing(gender) & cprd=="aurum" 
+drop if missing(BMI) & cprd=="aurum" 
+drop if missing(systolic) & cprd=="aurum" 
+drop if missing(ethnic) & cprd=="aurum" 
+drop if missing(imd) & cprd=="aurum" 
+drop if missing(smokstatus) & cprd=="aurum" 
+tab t2d cprd 
+
+*9.count population after complete case inclusion applied 
+tab t2d 
+tab t2d cprd 
+
+*check dataset is without oralglucose and insulin in control 
+tab t2d oral_glucose 
+tab t2d insulin 
+
+*check dod 0,1 
+replace dod_out=0 if missing(dod_out)
+
+*rates per 1,000 person-years 
+gen pop_hf=tte_hf_out/1000
+gen pop_hfi=tte_hfi_out/1000
+gen pop_hfn=tte_hfn_out/1000
+gen pop_dod=tte_dod_out/1000
+
+*gen indexyear_cut (compare two time periods 2000-2004 vs. 2005-2009)
+gen indexyear_cut="2000-2004" if indexyear==2000 | indexyear==2001 | indexyear==2002 | indexyear==2003 | indexyear==2004 
+replace indexyear_cut="2005-2009" if indexyear==2005 | indexyear==2006 | indexyear==2007 | indexyear==2008 | indexyear==2009 
+tab indexyear_cut 
+sencode indexyear_cut, replace 
+
+*generate sex - male = 2; female = 1
+gen sex = 2 if gender == "male"
+replace sex = 1 if gender == "female"
+tab gender 
+tab sex 
+destring sex, replace 
+
+*age groups for age-stratified  
+gen age_cut="<60" if age<60
+replace age_cut="60-69" if age>59 & age<70 
+replace age_cut="70-79" if age>69 & age<80
+replace age_cut="80≥" if age>79
+tab age_cut 
+sencode age_cut, replace
+
+*IMD variable 
+*imd 1 = most affluent/least deprived 
+*imd 5 = most deprived 
+tab imd 
+gen imd_cut = 1 if imd=="1" 
+replace imd_cut= 5 if imd=="5" 
+tab imd_cut 
+
+*format data 
+sencode ethnic, replace 
+sencode alcstatus, replace 
+sencode smokstatus_cut, replace 
+destring imd, replace 
+
+*save dataset - trends 
+save "...\t2d_trends_s2.dta", replace 
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+*Supplement: Sex-stratified trends for ischaemic and non-ischaemic HF in people with and without type 2 diabetes (with prevalent ischaemic heart disease)
+*10-year survival 
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+*load data 
+use "...\t2d_trends_s2.dta", clear 
+
+//10-year survival 
+drop if indexyear>2009
+
+//--------Ischaemic heart failure 
+stset tte_hfi_out, id(patid) exit(time 10) failure(hfi_out==1)
+replace _t = _t/1000			
+gen out = _d 
+
+*jj = t2d (1 = t2d; 0 = without diabetes)
+foreach t2d in 0 1 {															
+	preserve  									
+	poisson out age indexyear##sex if t2d == `t2d', exposure(_t) irr vce(robust) 	
+	margins indexyear#sex if t2d == `t2d', predict(ir) at(age=60) post
+	parmest, fast
+	gen t2d = `t2d'
+	tempfile t2d_`t2d'
+	save `t2d_`t2d'', replace
+	restore
+}
+
+*graph
+use `t2d_0', clear
+append using `t2d_1'
+split parm, p(.)
+rename parm1 year 
+destring year, replace 
+split parm2, p(#)
+rename parm22 sex
+destring sex, replace 
+gen type = "ischaemic_s2"
+save "...\ischaemic_s2", replace
+
+//--------Non-ischaemic heart failure 
+use "...\t2d_trends_s2.dta", clear 
+
+*10-year survival 
+drop if indexyear>2009
+
+//run model 
+stset tte_hfn_out, id(patid) exit(time 10) failure(hfn_out==1)
+replace _t = _t/1000	
+gen out =_d 		
+
+*t2d= 1 = t2d; 0  = without diabetes 
+foreach t2d in 0 1 {															
+	preserve  									
+	poisson out age indexyear##sex if t2d == `t2d', exposure(_t) irr vce(robust) 	
+	margins indexyear#sex if t2d == `t2d', predict(ir) at(age=60) post
+	parmest, fast
+	gen t2d = `t2d'
+	tempfile t2d_`t2d'
+	save `t2d_`t2d'', replace
+	restore
+}
+
+*graph
+use `t2d_0', clear
+append using `t2d_1'
+split parm, p(.)
+rename parm1 year 
+destring year, replace 
+split parm2, p(#)
+rename parm22 sex
+destring sex, replace 
+gen type = "nischaemic_s2"
+save "...\nischaemic_s2", replace
+
+**append together 
+use "...\ischaemic_s2", clear 
+append using "...\nischaemic_s2", force 
+append using "...\ischaemic_main", force 
+append using "...\nischaemic_main", force 
+
+* Ischaemic graph for men (sex==2) (10-year survival)
+twoway (connected estimate year if t2d == 1 & sex == 2 & type == "ischaemic_s2", sort mcolor(red) lcolor(red) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 2 & type == "ischaemic_s2", sort lcolor(red) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & sex == 2 & type == "ischaemic_s2", sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 2 & type == "ischaemic_s2", sort lcolor(blue) lwidth(thin)) ///
+       (connected estimate year if t2d == 1 & sex == 2 & type == "ischaemic_main", sort mcolor(red) lcolor(red) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 2 & type == "ischaemic_main", sort lcolor(red) lwidth(thin) lpattern(dash)) ///
+       (connected estimate year if t2d == 0 & sex == 2 & type == "ischaemic_main", sort mcolor(blue) lcolor(blue) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 2 & type == "ischaemic_main", sort lcolor(blue) lwidth(thin) lpattern(dash)), ///
+       ytitle("Age-standardised rate" "(per 1,000 person-years)", size(huge)) ///
+       ylabel(0.1 0.5 1 2 3 4, labsize(huge)) ///
+       xtitle("", size(large)) ///
+       title("A. Ischaemic heart failure", size(huge) pos(11)) ///
+       xlabel(2000(1)2009, nolabels) ///
+       legend(order(1 "Men with T2D" 3 "Men without diabetes") region(fcolor(none)) position(1) ring(0)) ///
+       legend(size(vlarge)) ///
+       xsize(5) ///
+       ysize(4) ///
+       yscale(log) ///
+       name(male_i10s2, replace)
+
+* Ischaemic graph for women (sex==1) (10-year survival)
+twoway (connected estimate year if t2d == 1 & sex == 1 & type == "ischaemic_s2", sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 1 & type == "ischaemic_s2", sort lcolor(orange) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & sex == 1 & type == "ischaemic_s2", sort mcolor(green) lcolor(green) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 1 & type == "ischaemic_s2", sort lcolor(green) lwidth(thin)) ///
+       (connected estimate year if t2d == 1 & sex == 1 & type == "ischaemic_main", sort mcolor(orange) lcolor(orange) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 1 & type == "ischaemic_main", sort lcolor(orange) lwidth(thin) lpattern(dash)) ///
+       (connected estimate year if t2d == 0 & sex == 1 & type == "ischaemic_main", sort mcolor(green) lcolor(green) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 1 & type == "ischaemic_main", sort lcolor(green) lwidth(thin) lpattern(dash)), ///
+       ytitle(" ", size(large)) ///
+       ylabel(0.1 0.5 1 2 3 4, labsize(huge)) ///
+       xtitle("", size(large)) ///
+       title(" ", size(vhuge) pos(11)) ///
+       xlabel(2000(1)2009, nolabels) ///
+       legend(order(1 "Women with T2D" 3 "Women without diabetes") region(fcolor(none)) position(1) ring(0)) ///
+       legend(size(vlarge)) ///
+       xsize(5) ///
+       ysize(4) ///
+       yscale(log) ///
+       name(female_i10s2, replace)
+
+* Non-ischaemic graph for men (sex==2) (10-year survival)
+twoway (connected estimate year if t2d == 1 & sex == 2 & type == "nischaemic_s2", sort mcolor(red) lcolor(red) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 2 & type == "nischaemic_s2", sort lcolor(red) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & sex == 2 & type == "nischaemic_s2", sort mcolor(blue) lcolor(blue) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 2 & type == "nischaemic_s2", sort lcolor(blue) lwidth(thin)) ///
+       (connected estimate year if t2d == 1 & sex == 2 & type == "nischaemic_main", sort mcolor(red) lcolor(red) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 2 & type == "nischaemic_main", sort lcolor(red) lwidth(thin) lpattern(dash)) ///
+       (connected estimate year if t2d == 0 & sex == 2 & type == "nischaemic_main", sort mcolor(blue) lcolor(blue) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 2 & type == "nischaemic_main", sort lcolor(blue) lwidth(thin) lpattern(dash)), ///
+       ytitle("Age-standardised rate" "(per 1,000 person-years)", size(huge)) ///
+       ylabel(0.1 0.5 1 2 3 4, labsize(huge)) ///
+       xtitle("Years", size(huge)) ///
+       title("B. Non-ischaemic heart failure", size(huge) pos(11)) ///
+       xlabel(2000(1)2009, labsize(huge) angle(45)) ///
+       legend(off) ///
+       xsize(5) ///
+       ysize(4) ///
+       yscale(log) ///
+       name(male_ni10s2, replace)
+
+twoway (connected estimate year if t2d == 1 & sex == 1 & type == "nischaemic_s2", sort mcolor(orange) lcolor(orange) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 1 & type == "nischaemic_s2", sort lcolor(orange) lwidth(thin)) ///
+       (connected estimate year if t2d == 0 & sex == 1 & type == "nischaemic_s2", sort mcolor(green) lcolor(green) lwidth(thin)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 1 & type == "nischaemic_s2", sort lcolor(green) lwidth(thin)) ///
+       (connected estimate year if t2d == 1 & sex == 1 & type == "nischaemic_main", sort mcolor(orange) lcolor(orange) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 1 & sex == 1 & type == "nischaemic_main", sort lcolor(orange) lwidth(thin) lpattern(dash)) ///
+       (connected estimate year if t2d == 0 & sex == 1 & type == "nischaemic_main", sort mcolor(green) lcolor(green) lwidth(thin) lpattern(dash)) ///
+       (rcap min95 max95 year if t2d == 0 & sex == 1 & type == "nischaemic_main", sort lcolor(green) lwidth(thin) lpattern(dash)), ///
+       ytitle(" ", size(large)) ///
+       ylabel(0.1 0.5 1 2 3 4, labsize(huge)) ///
+       xtitle("Years", size(huge)) ///
+       title(" ", size(vhuge) pos(11)) ///
+       xlabel(2000(1)2009, labsize(huge) angle(45)) ///
+       legend(off) ///
+       xsize(5) ///
+       ysize(4) ///
+       yscale(log) ///
+       name(female_ni10s2, replace)
+
+*graph save  
+graph combine male_i10s2 female_i10s2 male_ni10s2 female_ni10s2, cols(2) rows(2) iscale(*0.5) ycommon name(sex_10y_s2, replace)
+graph save "sex_10y_s2" "...\sex_10y_s2.gph", replace 
+graph export "...\sex_10y_s2.jpg", replace as(jpg) name("sex_10y_s2") width(8000) height(5000) quality(100) 
