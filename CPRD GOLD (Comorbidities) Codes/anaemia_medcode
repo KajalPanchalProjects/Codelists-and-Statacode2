@@ -1,4 +1,4 @@
-medcode,term,anaemia
+medcode,readterm,anaemia
 19951,Achlorhydric anaemia,1
 15658,Acquired aplastic anaemia,1
 21723,Acquired aplastic anaemia NOS,1
@@ -21,8 +21,8 @@ medcode,term,anaemia
 29601,Anaemia in the puerperium - baby delivered,1
 2054,Anaemia in the puerperium - baby previously delivered,1
 19574,Anaemia of prematurity,1
-35783,Anaemia screen,1
 6577,Anaemia screen,1
+35783,Anaemia screen,1
 25394,Anaemia secondary to chronic renal failure,1
 16929,Anaemia secondary to renal failure,1
 739,Anaemia unspecified,1
