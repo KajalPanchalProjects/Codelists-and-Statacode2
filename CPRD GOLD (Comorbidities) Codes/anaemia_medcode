@@ -103,8 +103,8 @@ medcode,readterm,anaemia
 797,Macrocytic anaemia of unspecified cause,1
 3981,Macrocytic anaemia unspecified cause,1
 43367,Mechanical haemolytic anaemia,1
-66137,Mediterranean anaemia,1
 105439,Mediterranean anaemia,1
+66137,Mediterranean anaemia,1
 4475,Megaloblastic anaemia,1
 53799,Megaloblastic anaemia NOS,1
 59103,Megaloblastic anaemia due to dietary causes,1
@@ -194,7 +194,6 @@ medcode,readterm,anaemia
 94921,[M] Refractory anaemia with excess of blasts,1
 56756,[M] Refractory anaemia with sideroblasts,1
 60186,[M]Refractory anaemia+excess of blasts with transformation,1
-44527,[V]Family history of anaemia,1
 56208,[V]Screening for other or unspecified deficiency anaemia,1
 31205,[X]Anaemia in other chronic diseases classified elsewhere,1
 99917,[X]Haemolytic anaemias,1
